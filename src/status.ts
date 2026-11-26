@@ -3,8 +3,8 @@
 import type { Phase } from "./controller.ts";
 
 export const STATUS_KEY = "compactor";
-/** Footer prefix: the press, without a variation selector so it stays 1-2 cells wide. */
-export const BRAND = "🗜";
+/** Footer prefix: the press with emoji presentation (U+FE0F); pi-tui measures it as 2 cells, like 🪐. */
+export const BRAND = "🗜️";
 
 export interface StatusView {
 	phase: Phase;
