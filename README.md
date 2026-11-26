@@ -4,7 +4,7 @@
 
 Phased context compaction for Pi: the agent hands off first, then the press comes down.
 
-Phased context compaction for [Pi](https://github.com/earendil-works). When the context gets full, pi-compactor waits for a safe moment, asks the agent to hand off its state, and then compacts. The handoff survives compaction and the agent picks up where it left off.
+pi-compactor is an extension for [Pi](https://github.com/earendil-works). When the context gets full, pi-compactor waits for a safe moment, asks the agent to hand off its state, and then compacts. The handoff survives compaction and the agent picks up where it left off.
 
 ```
 soft threshold → (prune old tool outputs) → wait for a safe point → preflight: agent calls compaction_ready
