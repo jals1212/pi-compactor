@@ -4,6 +4,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { resolveConfig, type CompactorConfig } from "./config.ts";
 import { createStore, type Store } from "./store.ts";
 import { registerCycle, type Cycle } from "./cycle.ts";
+import { registerCommands, type CommandCtx } from "./commands.ts";
+import { createStatus, STATUS_KEY } from "./status.ts";
 
 export interface WireOptions {
 	agentDir: string;
@@ -68,6 +70,19 @@ export function registerCompactor(pi: ExtensionAPI, options: WireOptions): Compa
 	const settings: Settings = { current, store, warnings: () => warnings };
 	const { convertToLlm, serializeConversation } = options;
 	const serialize = convertToLlm && serializeConversation ? (messages: unknown[]) => serializeConversation(convertToLlm(messages as never[]) as never) : undefined;
-	const cycle = registerCycle(pi, { config: current, notify, serialize });
+	const status = createStatus((text) => {
+		if (ctx?.hasUI) ctx.ui.setStatus(STATUS_KEY, text);
+	});
+	const cycle = registerCycle(pi, { config: current, notify, serialize, onChange: (phase, percent) => status.update(phase, percent) });
+	registerCommands(pi, {
+		cycle,
+		settings,
+		modelKey,
+		use: (c: CommandCtx) => void (ctx = c),
+		say: (c, text, level = "info") => {
+			if (c.hasUI) c.ui.notify(text, level);
+			else stderr(`[compactor] ${text}\n`);
+		},
+	});
 	return { ...settings, settings, cycle };
 }

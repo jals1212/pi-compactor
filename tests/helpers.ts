@@ -31,13 +31,41 @@ export interface FakeCtx {
 	cwd: string;
 	hasUI: boolean;
 	model: { provider: string; id: string; contextWindow?: number } | undefined;
-	ui: { notify(text: string, type?: string): void; setStatus(key: string, text: string | undefined): void };
+	ui: {
+		notify(text: string, type?: string): void;
+		setStatus(key: string, text: string | undefined): void;
+		select(title: string, options: string[]): Promise<string | undefined>;
+		input(title: string, placeholder?: string): Promise<string | undefined>;
+		editor(title: string, prefill?: string): Promise<string | undefined>;
+	};
+	sessionManager: { getBranch(): unknown[] };
 	getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
 	compact(options?: CompactCall["options"]): void;
 	isIdle(): boolean;
 	modelRegistry: { find(provider: string, id: string): unknown; complete(model: unknown, context: Completion["context"], options: Completion["options"]): Promise<FakeResponse> };
 	[key: string]: unknown;
 }
+
+/** A dialog the extension opened (`ctx.ui.select/input/editor`). */
+export interface Dialog {
+	kind: "select" | "input" | "editor";
+	title: string;
+	options?: string[];
+	/** Placeholder (input) or prefill (editor). */
+	initial?: string;
+}
+
+/** What a dialog answers: text, `undefined` (cancelled) or a function of the dialog. An empty script cancels. */
+export type Answer = string | undefined | ((dialog: Dialog) => string | undefined);
+
+/** Answer a select with the first option that starts with `prefix`. */
+export const pick =
+	(prefix: string): Answer =>
+	(dialog) => {
+		const found = dialog.options?.find((o) => o.startsWith(prefix));
+		if (found === undefined) throw new Error(`no option starting with ${JSON.stringify(prefix)} in ${JSON.stringify(dialog.options)}`);
+		return found;
+	};
 
 export interface FakePi {
 	pi: any;
@@ -58,6 +86,15 @@ export interface FakePi {
 	setReply(next: FakeResponse | Error | ((call: Completion) => FakeResponse)): void;
 	ctx: FakeCtx;
 	agentDir: string;
+	/** Dialogs opened so far, in order. */
+	dialogs: Dialog[];
+	/** Queue the answers for the next dialogs. */
+	answers(...answers: Answer[]): void;
+	/** Session entries `ctx.sessionManager.getBranch()` returns; `pi.appendEntry` adds custom entries here. */
+	entries: unknown[];
+	appended: [string, unknown][];
+	/** Run `/compactor <args>` through its registered handler. */
+	command(args?: string): Promise<void>;
 	/** Set the context usage percent the next events will report (window 100k tokens). */
 	setPercent(percent: number | null): void;
 	fire(event: string, payload?: Record<string, unknown>): Promise<unknown[]>;
@@ -85,13 +122,29 @@ export function fakePi(options: { hasUI?: boolean; model?: FakeCtx["model"] } = 
 	const compacts: CompactCall[] = [];
 	const completions: Completion[] = [];
 	const registry = new Map<string, unknown>();
+	const dialogs: Dialog[] = [];
+	const script: Answer[] = [];
+	const entries: unknown[] = [];
+	const appended: [string, unknown][] = [];
+	const ask = async (dialog: Dialog) => {
+		dialogs.push(dialog);
+		const answer = script.shift();
+		return typeof answer === "function" ? answer(dialog) : answer;
+	};
 	let next: FakeResponse | Error | ((call: Completion) => FakeResponse) = reply("SUMMARY");
 	let percent: number | null = 10;
 	const ctx: FakeCtx = {
 		cwd,
 		hasUI: options.hasUI ?? true,
 		model: "model" in options ? options.model : { provider: "anthropic", id: "opus", contextWindow: WINDOW },
-		ui: { notify: (text, type) => void notes.push([text, type]), setStatus: (key, text) => void statuses.push([key, text]) },
+		ui: {
+			notify: (text, type) => void notes.push([text, type]),
+			setStatus: (key, text) => void statuses.push([key, text]),
+			select: (title, options) => ask({ kind: "select", title, options }),
+			input: (title, placeholder) => ask({ kind: "input", title, initial: placeholder }),
+			editor: (title, prefill) => ask({ kind: "editor", title, initial: prefill }),
+		},
+		sessionManager: { getBranch: () => entries },
 		getContextUsage: () => ({ tokens: percent === null ? null : (percent / 100) * WINDOW, contextWindow: WINDOW, percent }),
 		compact: (o = {}) => void compacts.push({ options: o }),
 		isIdle: () => true,
@@ -121,6 +174,10 @@ export function fakePi(options: { hasUI?: boolean; model?: FakeCtx["model"] } = 
 		registerTool: (def: any) => void tools.set(def.name, def),
 		registerCommand: (name: string, def: any) => void commands.set(name, def),
 		sendMessage: (message: any, opts: any) => void sent.push([message, opts]),
+		appendEntry: (customType: string, data?: unknown) => {
+			appended.push([customType, data]);
+			entries.push({ type: "custom", customType, data });
+		},
 		events: {
 			emit,
 			on(channel: string, handler: (data: unknown) => void) {
@@ -145,6 +202,13 @@ export function fakePi(options: { hasUI?: boolean; model?: FakeCtx["model"] } = 
 		setReply: (r) => void (next = r),
 		ctx,
 		agentDir,
+		dialogs,
+		answers: (...a) => void script.push(...a),
+		entries,
+		appended,
+		async command(args = "") {
+			await commands.get("compactor").handler(args, ctx);
+		},
 		setPercent: (p) => void (percent = p),
 		async fire(event, payload = {}) {
 			const results = [];

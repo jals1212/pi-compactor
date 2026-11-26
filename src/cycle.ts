@@ -4,7 +4,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactorConfig } from "./config.ts";
 import { planPruning } from "./pruning.ts";
-import { createController, type Boundary, type Decision, type Usage } from "./controller.ts";
+import { createController, type Boundary, type Decision, type Phase, type Usage } from "./controller.ts";
 import { buildCompaction, type CompactorDetails, type Preparation } from "./strategy.ts";
 import { createSummarizer } from "./summarize.ts";
 import { CHANNELS, collectContributions, createCriticalSections, renderPreflight, type Contribution, type EventBus } from "./protocol.ts";
@@ -22,6 +22,8 @@ export interface CycleDeps {
 	notify(text: string, type?: "info" | "warning" | "error"): void;
 	/** Messages to readable text (Pi's `serializeConversation(convertToLlm(messages))`); injected as a runtime value. */
 	serialize?(messages: unknown[]): string;
+	/** Called after the cycle may have changed phase (boundaries, compaction done or failed, requests, aborts). */
+	onChange?(phase: Phase, percent: number | undefined): void;
 }
 
 export interface CycleSnapshot {
@@ -57,6 +59,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 	let contributions: Contribution[] = [];
 	let why: string | undefined;
 	let lastUsage: Usage | undefined;
+	const changed = () => deps.onChange?.(controller.state().phase, lastUsage?.percent);
 
 	const preflightEntry = (usage: Usage, config: CompactorConfig) => {
 		const collected = collectContributions(bus, { reason: controller.state().reason ?? "threshold", strategy: config.strategy });
@@ -85,12 +88,14 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 				resume = false;
 				contributions = [];
 				why = undefined;
+				changed();
 			},
 			onError: (error) => {
 				controller.failed(usage ?? { tokens: 0, percent: 0, contextWindow: 0 });
 				resume = false;
 				why = undefined;
 				deps.notify(`compaction failed: ${error.message}`, "error");
+				changed();
 			},
 		});
 	};
@@ -123,7 +128,15 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		return { edits: plan.edits, usage: { ...usage, tokens, percent: (tokens / usage.contextWindow) * 100 } };
 	};
 
-	const onBoundary = (boundary: Boundary, outcome: string, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[] = [], context?: unknown) => {
+	const onBoundary = (...args: Parameters<typeof handleBoundary>) => {
+		try {
+			return handleBoundary(...args);
+		} finally {
+			changed();
+		}
+	};
+
+	const handleBoundary = (boundary: Boundary, outcome: string, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[] = [], context?: unknown) => {
 		if (outcome !== "completed") {
 			if (outcome === "aborted") controller.abort();
 			return undefined;
@@ -158,12 +171,11 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		if (event.aborted) {
 			controller.abort();
 			resume = false;
-			return;
-		}
-		if (controller.state().phase === "compacting") {
+		} else if (controller.state().phase === "compacting") {
 			why ??= "handoff ready";
 			compactNow(ctx);
 		}
+		changed();
 	});
 
 	pi.on("session_before_compact", async (event, ctx) => {
@@ -217,6 +229,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 			controller.compacted();
 			resume = false;
 		}
+		changed();
 	});
 
 	const text = (t: string) => ({ content: [{ type: "text" as const, text: t }], details: undefined });
@@ -236,6 +249,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 			if (controller.state().phase !== "preflight") return text("No compaction is pending; nothing to do.");
 			if (!handoff) return text("The handoff must not be empty. Call compaction_ready again with your state.");
 			controller.ready(handoff);
+			changed();
 			return text("Handoff saved. Stop now: the context is compacted as soon as you finish this turn.");
 		},
 	} as never);
@@ -270,16 +284,16 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 			if (decision.action === "compact") {
 				why = decision.why;
 				if (ctx.isIdle()) compactNow(ctx);
-				return;
-			}
-			if (decision.action === "preflight") {
+			} else if (decision.action === "preflight") {
 				const entry = preflightEntry(usage, config);
 				pi.sendMessage({ customType: entry.customType, content: entry.content, display: false, details: entry.details }, { triggerTurn: true, deliverAs: "followUp" });
 			}
+			changed();
 		},
 		abort() {
 			controller.abort();
 			resume = false;
+			changed();
 		},
 	};
 }
