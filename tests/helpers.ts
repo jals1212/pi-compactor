@@ -113,7 +113,7 @@ export const bigSession = () => ({
 	}),
 });
 
-export function fakePi(options: { hasUI?: boolean; model?: FakeCtx["model"] } = {}): FakePi {
+export function fakePi(options: { hasUI?: boolean; model?: FakeCtx["model"]; mode?: "tui" | "rpc" | "json" | "print" } = {}): FakePi {
 	const root = mkdtempSync(join(tmpdir(), "compactor-wire-"));
 	const agentDir = join(root, "agent");
 	const cwd = join(root, "project");
@@ -144,6 +144,7 @@ export function fakePi(options: { hasUI?: boolean; model?: FakeCtx["model"] } = 
 	const ctx: FakeCtx = {
 		cwd,
 		hasUI: options.hasUI ?? true,
+		...(options.mode === undefined ? {} : { mode: options.mode }),
 		model: "model" in options ? options.model : { provider: "anthropic", id: "opus", contextWindow: WINDOW },
 		ui: {
 			notify: (text, type) => void notes.push([text, type]),

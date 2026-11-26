@@ -1,8 +1,10 @@
 // Runs the compaction cycle on Pi's lifecycle: arms on usage, injects the preflight as a hidden message at a safe
-// boundary, takes the handoff from the compaction_ready tool, then writes the compaction itself as a boundary draft
-// (plus a hidden resume message and `continue` when the cycle interrupted work). Pi awaits boundary handlers inside
-// the running prompt, so this works in every mode; `ctx.compact` is fire-and-forget and print mode disposes the
-// runtime (aborting it) as soon as the prompt resolves. `ctx.compact` remains only for `/compactor now` while idle.
+// boundary, takes the handoff from the compaction_ready tool, then compacts by one of two routes chosen from `ctx.mode`:
+// - `tui`/`rpc` (the runtime outlives the prompt): Pi's own compaction (`ctx.compact`) at `agent_settled`, or at a turn
+//   end with a resume; Pi then fires `session_before_compact`/`session_compact`, which other extensions listen to.
+// - `print`/`json`/unknown (the runtime is disposed when the prompt resolves, aborting a fire-and-forget compaction):
+//   the compaction is written as a boundary draft (plus a hidden resume message and `continue` when work was
+//   interrupted); Pi awaits boundary handlers inside the running prompt.
 import type { BoundaryResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactorConfig } from "./config.ts";
 import { planPruning } from "./pruning.ts";
@@ -18,7 +20,10 @@ export const RESUME_TYPE = "compactor-resume";
 export const PIN_TYPE = "compactor-pin";
 export const RESUME_TEXT = "[compactor] The context was compacted. Continue the task from the handoff above; do not restart finished work.";
 
-type Ctx = Pick<ExtensionContext, "getContextUsage" | "compact"> & Partial<Pick<ExtensionContext, "signal" | "sessionManager">>;
+type Ctx = Pick<ExtensionContext, "getContextUsage" | "compact"> & Partial<Pick<ExtensionContext, "signal" | "sessionManager" | "mode">>;
+
+/** Modes whose runtime stays alive after the prompt, so Pi's fire-and-forget compaction completes. */
+const usesPiCompaction = (ctx: Ctx) => ctx.mode === "tui" || ctx.mode === "rpc";
 
 export interface CycleDeps {
 	config(): CompactorConfig;
@@ -177,8 +182,11 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		}
 	};
 
-	/** Marks a boundary where the cycle compacts (handled asynchronously by `onBoundary`). */
+	/** Marks a boundary where the cycle compacts (handled asynchronously by `onBoundary`); `edits` are the pruning edits. */
 	const COMPACT = Symbol("compact");
+	type Compact = { [COMPACT]: true; edits: readonly unknown[] };
+	const compact = (edits: readonly unknown[] = []): Compact => ({ [COMPACT]: true, edits });
+	const isCompact = (r: unknown): r is Compact => typeof r === "object" && r !== null && COMPACT in r;
 
 	const apply = (decision: Decision, boundary: Boundary, usage: Usage, config: CompactorConfig, entries: readonly unknown[]) => {
 		if (decision.action === "preflight") {
@@ -188,7 +196,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		}
 		if (decision.action === "compact") {
 			why = decision.why;
-			return COMPACT;
+			return compact();
 		}
 		return undefined;
 	};
@@ -207,8 +215,14 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 	const onBoundary = async (boundary: Boundary, outcome: string, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[] = [], context?: unknown) => {
 		try {
 			const result = handleBoundary(boundary, outcome, ctx, pendingTools, entries, context);
-			if (result === COMPACT) return await compactAtBoundary(boundary, ctx, entries, context);
-			return result;
+			if (!isCompact(result)) return result;
+			if (!usesPiCompaction(ctx)) return await compactAtBoundary(boundary, ctx, entries, context);
+			// Pi's route: at settle `agent_settled` compacts once idle; at a turn end compacting aborts the turn, so resume after.
+			if (boundary === "turn") {
+				resume = true;
+				compactNow(ctx);
+			}
+			return result.edits.length > 0 ? { entries: [...entries, ...result.edits] } : undefined;
 		} finally {
 			changed();
 		}
@@ -223,7 +237,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		// The handoff is in: the run is settling, so compact now (the agent was told to stop after compaction_ready).
 		if (phaseBefore === "compacting" && boundary === "settle") {
 			why ??= "handoff ready";
-			return COMPACT;
+			return compact();
 		}
 		const measured = readUsage(ctx);
 		if (!measured) return undefined;
@@ -233,7 +247,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		lastUsage = usage;
 		controller.observe(usage, config);
 		const result = decide(boundary, usage, config, pendingTools, [...entries, ...pruned.edits]);
-		if (result === COMPACT) return COMPACT;
+		if (isCompact(result)) return compact(pruned.edits);
 		if (result) return result;
 		return pruned.edits.length > 0 ? { entries: [...entries, ...pruned.edits] } : undefined;
 	};
@@ -242,7 +256,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		const phase = controller.state().phase;
 		if (phase === "compacting" && boundary === "turn" && usage.percent >= config.hardThreshold) {
 			why ??= "hard limit while compacting";
-			return COMPACT;
+			return compact();
 		}
 		const decision = controller.atBoundary(boundary, usage, config, { criticalSections: sections.active().length, pendingTools });
 		return apply(decision, boundary, usage, config, entries);
@@ -268,8 +282,10 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		if (event.aborted) {
 			controller.abort();
 			resume = false;
-		} else if (controller.state().phase === "compacting" && controller.state().reason === "manual") {
-			// `/compactor now` while the agent was running: Pi's own compaction once idle.
+		} else if (controller.state().phase === "compacting") {
+			// Still compacting once idle: Pi's own compaction (the Pi route's settle, or `/compactor now` during a run).
+			// A boundary compaction already left the phase, so this never compacts twice.
+			why ??= "handoff ready";
 			compactNow(ctx);
 		}
 		changed();

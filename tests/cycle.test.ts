@@ -180,6 +180,83 @@ test("preflight started between turns resumes the work after compaction", async 
 	assert.equal(f.compacts.length, 0);
 });
 
+/** Interactive and RPC runtimes outlive the prompt, so the cycle compacts through Pi's `ctx.compact` (Pi fires session_compact). */
+for (const mode of ["tui", "rpc"] as const) {
+	test(`${mode}: full cycle at settle returns no drafts, compacts once via ctx.compact at agent_settled, no resume`, async () => {
+		const { f, api } = await setup({ mode });
+		f.setPercent(75);
+		const [pre] = (await f.fire("agent_before_settle", settle())) as any[];
+		assert.equal(pre.entries[0].customType, "compactor-preflight");
+		await f.tool("compaction_ready", { handoff: "Goal: ship T10" });
+		assert.deepEqual(await f.fire("agent_before_settle", settle("completed", session())), [undefined], "no boundary drafts");
+		assert.equal(f.compacts.length, 0, "compaction waits for agent_settled");
+		assert.equal(api.cycle.state().phase, "compacting");
+		await f.fire("agent_settled", { aborted: false });
+		assert.equal(f.compacts.length, 1);
+		assert.equal(f.compacts[0].options.customInstructions, "Goal: ship T10");
+		assert.equal(f.emitted.filter(([c]) => c === "compactor:done").length, 0, "done only when Pi finishes");
+		f.compacts[0].options.onComplete!({ details: { compactor: { strategy: "hybrid" } } });
+		const done = f.emitted.filter(([c]) => c === "compactor:done");
+		assert.equal(done.length, 1);
+		assert.equal((done[0][1] as any).tokensBefore, 75_000);
+		assert.deepEqual((done[0][1] as any).compactor, { strategy: "hybrid" });
+		assert.deepEqual(f.sent, [], "the agent had finished: nothing to resume");
+		assert.equal(api.cycle.state().phase, "idle");
+		await f.fire("agent_settled", { aborted: false });
+		assert.equal(f.compacts.length, 1, "never compacts twice");
+	});
+}
+
+test("tui: a preflight started at a turn end resumes through a followUp message after Pi's compaction", async () => {
+	const { f, api } = await setup({ mode: "tui" });
+	api.settings.store().update("global", "safePoint", "turn");
+	f.setPercent(75);
+	const [r] = (await f.fire("turn_end", turnEnd(0))) as any[];
+	assert.equal(r.continue, true);
+	await f.tool("compaction_ready", { handoff: "Goal: X" });
+	assert.deepEqual(await f.fire("agent_before_settle", settle("completed", session())), [undefined]);
+	await f.fire("agent_settled", { aborted: false });
+	assert.equal(f.compacts.length, 1);
+	assert.deepEqual(f.sent, [], "resume waits for the compaction");
+	f.compacts[0].options.onComplete!(undefined);
+	assert.equal(f.sent.length, 1);
+	assert.equal(f.sent[0][0].customType, "compactor-resume");
+	assert.equal(f.sent[0][0].display, false);
+	assert.deepEqual(f.sent[0][1], { triggerTurn: true, deliverAs: "followUp" });
+	assert.equal(f.emitted.filter(([c]) => c === "compactor:done").length, 1);
+});
+
+test("tui: a preflight that runs out of turns compacts at the turn end through ctx.compact, with resume", async () => {
+	const { f } = await setup({ mode: "tui" });
+	f.setPercent(75);
+	await f.fire("agent_before_settle", settle());
+	assert.deepEqual(await f.fire("turn_end", turnEnd(1, "completed", session())), [undefined]);
+	assert.deepEqual(await f.fire("turn_end", turnEnd(1, "completed", session())), [undefined]);
+	assert.equal(f.compacts.length, 0);
+	assert.deepEqual(await f.fire("turn_end", turnEnd(1, "completed", session())), [undefined], "no boundary drafts");
+	assert.equal(f.compacts.length, 1);
+	assert.deepEqual(f.sent, []);
+	f.compacts[0].options.onComplete!(undefined);
+	assert.equal(f.sent.length, 1);
+	assert.equal(f.sent[0][0].customType, "compactor-resume");
+	assert.deepEqual(f.sent[0][1], { triggerTurn: true, deliverAs: "followUp" });
+});
+
+for (const mode of ["print", "json"] as const) {
+	test(`${mode}: the runtime exits with the prompt, so the compaction stays a boundary draft`, async () => {
+		const { f, api } = await setup({ mode });
+		await toCompacting(f);
+		const [c] = (await f.fire("agent_before_settle", settle("completed", session()))) as any[];
+		assert.equal(c.entries[0].type, "compaction");
+		assert.match(c.entries[0].summary, /## Handoff\nGoal: ship T3/);
+		assert.equal(api.cycle.state().phase, "idle");
+		await f.fire("agent_settled", { aborted: false });
+		assert.equal(f.compacts.length, 0);
+		assert.deepEqual(f.sent, []);
+		assert.equal(f.emitted.filter(([c]) => c === "compactor:done").length, 1);
+	});
+}
+
 test("compaction_ready outside a preflight says so and changes nothing", async () => {
 	const { f, api } = await setup();
 	const out = await f.tool("compaction_ready", { handoff: "x" });

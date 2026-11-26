@@ -23,7 +23,11 @@ pi install npm:pi-compactor
 
    Critical sections (see below) also defer it. Deferral is bounded: at `hardThreshold`, or once the context has grown by `maxDeferTokens`, the cycle proceeds anyway.
 3. **Preflight.** The agent receives hidden instructions to finish or pause, save what must persist, and call `compaction_ready({ handoff })`. Preflight is bounded by `preflight.maxTurns` and `preflight.budgetTokens`. If either limit is reached, compaction runs without a handoff.
-4. **Compaction.** Written as a boundary entry while the run settles (or at a turn end when the hard limit leaves no headroom), so no turn is aborted and it works the same in interactive, print, JSON and RPC modes. The cut keeps about Pi's `compaction.keepRecentTokens` of recent context. If the cycle interrupted the work, a hidden resume message follows the compaction and the run continues in the same prompt. `/compactor now` while idle uses Pi's own compaction.
+4. **Compaction.** The route depends on the runtime (`ctx.mode`). The cut keeps about Pi's `compaction.keepRecentTokens` of recent context, and the summary follows the strategy.
+   - Interactive (TUI) and RPC: Pi's own compaction (`ctx.compact`), once the agent has settled, or at a turn end (aborting that turn) when the hard limit leaves no headroom. Pi fires `session_before_compact` and `session_compact`, so extensions that listen to them (memory extensions, for example) see the compaction. If the cycle interrupted the work, a hidden resume message is sent as a follow-up when the compaction completes.
+   - Print and JSON: written as a boundary entry while the run settles (or at a turn end), because the runtime exits as soon as the prompt resolves and would abort a fire-and-forget compaction. No `session_compact` is fired. If the cycle interrupted the work, a hidden resume message follows the compaction and the run continues in the same prompt.
+
+   `/compactor now` while idle always uses Pi's own compaction.
 
 Pi's own threshold compaction is cancelled while pi-compactor still has headroom. Overflow compaction is never cancelled.
 
