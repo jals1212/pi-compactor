@@ -146,10 +146,12 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 				resume = false;
 				return undefined;
 			}
+			// Pi's own measure (getContextUsage uses the estimator Pi stores in the entry); ours only when Pi has none.
+			const tokensBefore = readUsage(ctx)?.tokens ?? preparation.tokensBefore;
 			const compactor: CompactorDetails & { reason: string; tokensBefore: number; why?: string } = {
 				...built.compaction.details.compactor,
 				reason: state.reason ?? "threshold",
-				tokensBefore: preparation.tokensBefore,
+				tokensBefore,
 			};
 			if (why !== undefined) compactor.why = why;
 			const draft: Record<string, unknown> = { type: "compaction", summary: built.compaction.summary, firstKeptEntryId: built.compaction.firstKeptEntryId, details: { compactor } };
@@ -159,7 +161,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 			const resumes = boundary === "turn" || resume;
 			if (resumes) out.push({ type: "custom_message", customType: RESUME_TYPE, content: RESUME_TEXT, display: false });
 			controller.compacted();
-			bus.emit(CHANNELS.done, { reason: state.reason, why, handoff: state.handoff !== undefined, tokensBefore: lastUsage?.tokens ?? preparation.tokensBefore, strategy: config.strategy, compactor });
+			bus.emit(CHANNELS.done, { reason: state.reason, why, handoff: state.handoff !== undefined, tokensBefore, strategy: config.strategy, compactor });
 			resume = false;
 			contributions = [];
 			why = undefined;

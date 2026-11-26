@@ -116,7 +116,17 @@ test("hybrid at settle summarizes the part before the cut and records the usage"
 	assert.equal(c.firstKeptEntryId, "u3");
 	assert.match(c.summary, /## Summary\nSUMMARY/);
 	assert.deepEqual(c.usage, { input: 10, output: 5 });
-	assert.equal(c.details.compactor.tokensBefore, 2500);
+	assert.equal(c.details.compactor.tokensBefore, 75_000, "Pi's own context measure, the one it stores in the entry");
+	assert.equal((f.emitted.find(([ch]) => ch === "compactor:done")![1] as any).tokensBefore, 75_000);
+});
+
+test("tokensBefore falls back to the preparation estimate when Pi cannot measure the context", async () => {
+	const { f } = await setup();
+	await toCompacting(f);
+	f.setPercent(null);
+	const [r] = (await f.fire("agent_before_settle", settle("completed", session()))) as any[];
+	assert.equal(r.entries[0].details.compactor.tokensBefore, 2500);
+	assert.equal((f.emitted.find(([ch]) => ch === "compactor:done")![1] as any).tokensBefore, 2500);
 	const prompt = f.completions[0].context.messages[0].content[0].text;
 	assert.match(prompt, /\[user\] Build the parser/);
 	assert.doesNotMatch(prompt, /add tests/, "the kept part is not summarized");

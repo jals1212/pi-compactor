@@ -70,7 +70,7 @@ test("status reports the last compaction from compactor:done", async () => {
 	await f.command("status");
 	const text = last(f)[0];
 	assert.ok(text.includes("phase: idle"), text);
-	assert.ok(text.includes("last compaction: threshold (handoff ready) · strategy handoff-only · fallback: none · 50028 tokens before · 0 pins · handoff yes"), text);
+	assert.ok(text.includes("last compaction: threshold (handoff ready) · strategy handoff-only · fallback: none · 75000 tokens before · 0 pins · handoff yes"), text);
 	// A fallback recorded by any compaction is shown too.
 	f.emit("compactor:done", { reason: "manual", compactor: { strategy: "hybrid", fallback: "handoff-only without a handoff", handoff: false, pins: 2, readFiles: [], modifiedFiles: [] }, tokensBefore: 5 });
 	await f.command("status");
