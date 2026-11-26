@@ -83,7 +83,8 @@ export function createStore(options: StoreOptions): Store {
 				return { ok: false, error: `cannot update ${path}: ${message(error)}` };
 			}
 			let next: Record<string, unknown>;
-			if (model === undefined) next = value === undefined ? unsetPath(raw, key) : setPath(raw, key, value);
+			const file = raw as Record<string, unknown>;
+			if (model === undefined) next = value === undefined ? unsetPath(file, key) : setPath(file, key, value);
 			else {
 				const models = (getPath(raw, "models") ?? {}) as Record<string, object>;
 				const current = (models[model!] ?? {}) as object;

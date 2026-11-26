@@ -1,7 +1,7 @@
 // Runs the compaction cycle on Pi's lifecycle: arms on usage, injects the preflight as a hidden message at a safe
 // boundary, takes the handoff from the compaction_ready tool, compacts only when the agent is idle (ctx.compact
 // aborts a running turn) and resumes the work when the cycle interrupted it.
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { BoundaryResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactorConfig } from "./config.ts";
 import { planPruning } from "./pruning.ts";
 import { createController, type Boundary, type Decision, type Phase, type Usage } from "./controller.ts";
@@ -165,8 +165,9 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		return apply(decision, boundary, usage, config, ctx, entries);
 	};
 
-	pi.on("turn_end", (event, ctx) => onBoundary("turn", event.outcome, ctx, event.toolResults.length > 0, event.entries, event.context));
-	pi.on("agent_before_settle", (event, ctx) => onBoundary("settle", event.outcome, ctx, false, event.entries, event.context));
+	// Drafts are built as plain objects; Pi validates them when the boundary preview is rebuilt.
+	pi.on("turn_end", (event, ctx) => onBoundary("turn", event.outcome, ctx, event.toolResults.length > 0, event.entries, event.context) as BoundaryResult | undefined);
+	pi.on("agent_before_settle", (event, ctx) => onBoundary("settle", event.outcome, ctx, false, event.entries, event.context) as BoundaryResult | undefined);
 	pi.on("agent_settled", (event, ctx) => {
 		if (event.aborted) {
 			controller.abort();
