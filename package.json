@@ -1,6 +1,6 @@
 {
   "name": "pi-compactor",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Phased context compaction for Pi: preflight handoff before compacting, safe points, pins, pruning, and per-model thresholds, all configurable from a TUI.",
   "license": "MIT",
   "author": "jals1212",

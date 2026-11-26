@@ -14,6 +14,8 @@ export interface StatusView {
 	softThreshold: number;
 	/** Pi's current usage; undefined when Pi reports none (for example right after a compaction). */
 	usage?: { tokens: number; percent: number; contextWindow: number };
+	/** Set right after a compaction until usage is known again: its tokens before, or null when unknown. */
+	compactedFrom?: number | null;
 }
 
 /** Tokens as `999`, `620k` or `1.2M`. */
@@ -29,7 +31,10 @@ export function statusText(view: StatusView): string {
 	if (view.phase !== "idle") return view.percent === undefined ? `${BRAND} ${view.phase}` : `${BRAND} ${view.phase} ${Math.round(view.percent)}%`;
 	if (!view.enabled) return `${BRAND} off`;
 	const { usage } = view;
-	if (!usage || usage.contextWindow <= 0) return BRAND;
+	if (!usage || usage.contextWindow <= 0) {
+		if (view.compactedFrom === undefined) return `${BRAND} measuring`;
+		return view.compactedFrom === null ? `${BRAND} compacted` : `${BRAND} compacted from ${formatTokens(view.compactedFrom)}`;
+	}
 	const distance = Math.max(0, (view.softThreshold / 100) * usage.contextWindow - usage.tokens);
 	// Idle at or past the threshold (pruning, or the cycle has not armed yet): no distance left, show the usage.
 	if (Math.round(distance) === 0) return `${BRAND} due ${Math.round(usage.percent)}%`;

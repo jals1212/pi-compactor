@@ -55,7 +55,8 @@ With a UI, the footer always shows a `🗜️` status (status key `compactor`). 
 | Idle, at or past the threshold | `🗜️ due 82%` |
 | Cycle running | `🗜️ pending 75%`, `preflight 75%`, `compacting 75%` or `cooldown 75%` |
 | Automatic compaction off (`enabled: false`, `/compactor off`) | `🗜️ off` |
-| Usage unknown (right after a compaction) | `🗜️` |
+| Right after a compaction, until Pi reports usage again | `🗜️ compacted from 208k` (`🗜️ compacted` when the size is unknown) |
+| Usage not known yet (other cases) | `🗜️ measuring` |
 
 It updates at each turn end and settle, on session start and model change, and after every `/compactor` command (including settings and on/off).
 

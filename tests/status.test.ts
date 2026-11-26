@@ -56,15 +56,28 @@ test("at or past the threshold while idle the status shows the usage as due", as
 	assert.deepEqual(last(f), ["compactor", "🗜️ due 80%"]);
 });
 
-test("unknown usage shows the bare name, with no stale numbers", async () => {
-	const { f } = await setup();
-	assert.equal(last(f)![1], "🗜️ 60k to compact");
+test("unknown usage says it is measuring, with no stale numbers", async () => {
+	const f = fakePi();
+	registerCompactor(f.pi, { agentDir: f.agentDir, stderr: (t) => void f.stderr.push(t) });
 	f.setPercent(null);
-	await f.fire("session_compact", { reason: "manual" });
-	assert.deepEqual(last(f), ["compactor", "🗜️"]);
+	await f.fire("session_start", { reason: "startup" });
+	assert.deepEqual(f.statuses, [["compactor", "🗜️ measuring"]]);
 	f.setPercent(30);
 	await f.fire("turn_end", turnEnd());
 	assert.deepEqual(last(f), ["compactor", "🗜️ 40k to compact"]);
+});
+
+test("right after a compaction Pi did on its own the status says compacted until usage is known again", async () => {
+	const { f } = await setup();
+	f.setPercent(null);
+	await f.fire("session_compact", { reason: "manual" });
+	assert.deepEqual(last(f), ["compactor", "🗜️ compacted"]);
+	f.setPercent(30);
+	await f.fire("turn_end", turnEnd());
+	assert.deepEqual(last(f), ["compactor", "🗜️ 40k to compact"]);
+	f.setPercent(null);
+	await f.fire("turn_end", turnEnd());
+	assert.deepEqual(last(f), ["compactor", "🗜️ measuring"], "the compacted notice is shown once, not on every later gap");
 });
 
 test("disabled automatic compaction shows off, including /compactor off and on", async () => {
@@ -114,10 +127,10 @@ test("the status follows the phase with the usage percent, and returns to the id
 	assert.deepEqual(f.statuses.at(-1), ["compactor", "🗜️ compacting 75%"]);
 	f.setPercent(null); // Pi reports no usage right after a compaction
 	await f.fire("agent_before_settle", settle("completed", bigSession()));
-	assert.deepEqual(f.statuses.at(-1), ["compactor", "🗜️"]);
+	assert.deepEqual(f.statuses.at(-1), ["compactor", "🗜️ compacted from 50k"]);
 	assert.deepEqual(
 		f.statuses.map(([, t]) => t),
-		["🗜️ 60k to compact", "🗜️ pending 75%", "🗜️ preflight 75%", "🗜️ compacting 75%", "🗜️"],
+		["🗜️ 60k to compact", "🗜️ pending 75%", "🗜️ preflight 75%", "🗜️ compacting 75%", "🗜️ compacted from 50k"],
 		"each change is reported once",
 	);
 });
