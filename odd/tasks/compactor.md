@@ -3,7 +3,7 @@
 Pi extension package that compacts context in phases: a configurable soft threshold triggers a preflight
 in which the agent receives instructions and hands off state, then compaction runs and the agent resumes.
 Agnostic extension protocol; no direct adaptations to other extensions.
-Status: PLANNED ONLY — user said "no programes, solo anota el plan para despues". No source written yet.
+Status: IMPLEMENTING on branch feat/compactor (L11 "go go go").
 
 ## Specs
 
@@ -24,7 +24,7 @@ Status: PLANNED ONLY — user said "no programes, solo anota el plan para despue
 
 | ID | Specs | Task | Route | Commit |
 |----|-------|------|-------|--------|
-| T1 | S4, S6 | Package scaffold, config schema/resolution (global/project/model), validation | inline | |
+| T1 | S4, S6 | Package scaffold, config schema/resolution (global/project/model), validation | inline | 9e65cf9 (done, 24 tests) |
 | T2 | S2, S9, S10 | Threshold detector + safe-point/deferral policy + preflight state machine + `compaction_ready` tool + resume | inline | |
 | T3 | S7, S8, S9 | Strategies (summary/hybrid/handoff-only), pins, cumulative file lists, summary model | inline | |
 | T4 | S3 | Pruning of old tool outputs via context_edit | inline | |
@@ -73,3 +73,4 @@ Status: PLANNED ONLY — user said "no programes, solo anota el plan para despue
 - L8. Name: "pi-autocompact" rejected by npm (403, too similar to `pi-auto-compact`); user wanted a name in the style of their packages, "algo como una prensa, que compacta", chose "pi-compactor o squash"; `pi-compactor` published as placeholder `0.0.0-stage` on 2026-11-26. User: "ok Sí" to updating the plan with the new name.
 - L9. User "Sí" to renaming the command to `/compactor`, event channels to `compactor:*`, project config to `.pi/compactor.json`, the directory to `pi-compactor`, and this document to `odd/tasks/compactor.md`.
 - L10. User "seguimos" → chose "Prototipo de la brecha primero" (prove retain-none before coding T1). Result recorded in the Evidence GAP line.
+- L11. User "go go go" after the prototype result: implementation authorized; T1 done in 9e65cf9.
