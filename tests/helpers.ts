@@ -7,6 +7,26 @@ export interface CompactCall {
 	options: { customInstructions?: string; onComplete?: (r: unknown) => void; onError?: (e: Error) => void };
 }
 
+export interface Completion {
+	model: unknown;
+	context: { messages: { role: string; content: { type: string; text: string }[]; timestamp: number }[] };
+	options: { maxTokens?: number; signal?: AbortSignal; cacheRetention?: string; sessionId?: string };
+}
+
+export interface FakeResponse {
+	content: { type: string; text?: string }[];
+	stopReason: string;
+	usage?: unknown;
+	errorMessage?: string;
+}
+
+export const reply = (text: string, over: Partial<FakeResponse> = {}): FakeResponse => ({
+	content: [{ type: "text", text }],
+	stopReason: "stop",
+	usage: { input: 10, output: 5 },
+	...over,
+});
+
 export interface FakeCtx {
 	cwd: string;
 	hasUI: boolean;
@@ -15,6 +35,7 @@ export interface FakeCtx {
 	getContextUsage(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
 	compact(options?: CompactCall["options"]): void;
 	isIdle(): boolean;
+	modelRegistry: { find(provider: string, id: string): unknown; complete(model: unknown, context: Completion["context"], options: Completion["options"]): Promise<FakeResponse> };
 	[key: string]: unknown;
 }
 
@@ -29,6 +50,12 @@ export interface FakePi {
 	sent: [any, any][];
 	emitted: [string, unknown][];
 	compacts: CompactCall[];
+	/** Calls to ctx.modelRegistry.complete, in order. */
+	completions: Completion[];
+	/** Models ctx.modelRegistry.find knows, keyed `provider/id`. */
+	registry: Map<string, unknown>;
+	/** What ctx.modelRegistry.complete answers next; a function receives the call. */
+	setReply(next: FakeResponse | Error | ((call: Completion) => FakeResponse)): void;
 	ctx: FakeCtx;
 	agentDir: string;
 	/** Set the context usage percent the next events will report (window 100k tokens). */
@@ -56,6 +83,9 @@ export function fakePi(options: { hasUI?: boolean; model?: FakeCtx["model"] } = 
 	const sent: [any, any][] = [];
 	const emitted: [string, unknown][] = [];
 	const compacts: CompactCall[] = [];
+	const completions: Completion[] = [];
+	const registry = new Map<string, unknown>();
+	let next: FakeResponse | Error | ((call: Completion) => FakeResponse) = reply("SUMMARY");
 	let percent: number | null = 10;
 	const ctx: FakeCtx = {
 		cwd,
@@ -65,6 +95,15 @@ export function fakePi(options: { hasUI?: boolean; model?: FakeCtx["model"] } = 
 		getContextUsage: () => ({ tokens: percent === null ? null : (percent / 100) * WINDOW, contextWindow: WINDOW, percent }),
 		compact: (o = {}) => void compacts.push({ options: o }),
 		isIdle: () => true,
+		modelRegistry: {
+			find: (provider, id) => registry.get(`${provider}/${id}`),
+			async complete(model, context, opts) {
+				const call = { model, context, options: opts };
+				completions.push(call);
+				if (next instanceof Error) throw next;
+				return typeof next === "function" ? next(call) : next;
+			},
+		},
 	};
 	const emit = (channel: string, data: unknown) => {
 		emitted.push([channel, data]);
@@ -101,6 +140,9 @@ export function fakePi(options: { hasUI?: boolean; model?: FakeCtx["model"] } = 
 		sent,
 		emitted,
 		compacts,
+		completions,
+		registry,
+		setReply: (r) => void (next = r),
 		ctx,
 		agentDir,
 		setPercent: (p) => void (percent = p),

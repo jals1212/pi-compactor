@@ -9,6 +9,9 @@ export interface WireOptions {
 	agentDir: string;
 	/** Where notices go without a UI (print/JSON/RPC); stdout stays free for Pi's output. */
 	stderr?: (text: string) => void;
+	/** Pi's `convertToLlm` and `serializeConversation` (runtime exports); without them summaries fail and Pi's default compaction runs. */
+	convertToLlm?: (messages: never[]) => unknown;
+	serializeConversation?: (messages: never) => string;
 }
 
 export interface Settings {
@@ -63,6 +66,8 @@ export function registerCompactor(pi: ExtensionAPI, options: WireOptions): Compa
 	});
 
 	const settings: Settings = { current, store, warnings: () => warnings };
-	const cycle = registerCycle(pi, { config: current, notify });
+	const { convertToLlm, serializeConversation } = options;
+	const serialize = convertToLlm && serializeConversation ? (messages: unknown[]) => serializeConversation(convertToLlm(messages as never[]) as never) : undefined;
+	const cycle = registerCycle(pi, { config: current, notify, serialize });
 	return { ...settings, settings, cycle };
 }

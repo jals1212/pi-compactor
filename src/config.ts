@@ -16,8 +16,6 @@ export interface CompactorConfig {
 	safePoint: SafePoint;
 	/** Most tokens the context may grow while compaction waits for a safe point or a critical section. */
 	maxDeferTokens: number;
-	/** Recent context kept verbatim by the `hybrid` and `summary` strategies, in tokens. */
-	keepRecentTokens: number;
 	/** Model for summaries as `provider/modelId`; null uses the session model. */
 	summaryModel: string | null;
 	preflight: {
@@ -55,7 +53,6 @@ export const DEFAULTS: CompactorConfig = {
 	strategy: "hybrid",
 	safePoint: "settle",
 	maxDeferTokens: 20_000,
-	keepRecentTokens: 20_000,
 	summaryModel: null,
 	preflight: { enabled: true, maxTurns: 3, budgetTokens: 8_000, template: null },
 	pruning: { enabled: true, minToolResultTokens: 2_000, keepRecentTurns: 3 },
@@ -85,7 +82,6 @@ export const FIELDS: readonly Field[] = [
 	{ key: "strategy", kind: { type: "enum", values: ["summary", "hybrid", "handoff-only"] }, description: "What survives compaction" },
 	{ key: "safePoint", kind: { type: "enum", values: ["settle", "turn", "any"] }, description: "When a pending compaction may run" },
 	{ key: "maxDeferTokens", kind: { type: "number", min: 0, max: 1_000_000 }, description: "Max growth (tokens) while waiting" },
-	{ key: "keepRecentTokens", kind: { type: "number", min: 0, max: 1_000_000 }, description: "Recent tokens kept verbatim (summary, hybrid)" },
 	{ key: "summaryModel", kind: { type: "model" }, description: "provider/modelId for summaries (empty: session model)" },
 	{ key: "preflight.enabled", kind: { type: "boolean" }, description: "Ask the agent for a handoff before compacting" },
 	{ key: "preflight.maxTurns", kind: { type: "number", min: 1, max: 20 }, description: "Max agent turns for preflight" },

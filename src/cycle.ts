@@ -4,10 +4,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactorConfig } from "./config.ts";
 import { createController, type Boundary, type Decision, type Usage } from "./controller.ts";
+import { buildCompaction, type CompactorDetails, type Preparation } from "./strategy.ts";
+import { createSummarizer } from "./summarize.ts";
 import { CHANNELS, collectContributions, createCriticalSections, renderPreflight, type Contribution, type EventBus } from "./protocol.ts";
 
 export const PREFLIGHT_TYPE = "compactor-preflight";
 export const RESUME_TYPE = "compactor-resume";
+/** Session custom entry `{ customType: PIN_TYPE, data: { text } }` pins text so it survives every compaction. */
+export const PIN_TYPE = "compactor-pin";
 export const RESUME_TEXT = "[compactor] The context was compacted. Continue the task from the handoff above; do not restart finished work.";
 
 type Ctx = Pick<ExtensionContext, "getContextUsage" | "compact">;
@@ -15,6 +19,8 @@ type Ctx = Pick<ExtensionContext, "getContextUsage" | "compact">;
 export interface CycleDeps {
 	config(): CompactorConfig;
 	notify(text: string, type?: "info" | "warning" | "error"): void;
+	/** Messages to readable text (Pi's `serializeConversation(convertToLlm(messages))`); injected as a runtime value. */
+	serialize?(messages: unknown[]): string;
 }
 
 export interface CycleSnapshot {
@@ -22,6 +28,17 @@ export interface CycleSnapshot {
 	contributions: Contribution[];
 	reason?: "threshold" | "manual";
 	why?: string;
+}
+
+/** Text of the manual pins in the session's custom entries, oldest first. */
+export function manualPins(branchEntries: unknown[]): string[] {
+	const out: string[] = [];
+	for (const e of branchEntries as { type?: string; customType?: string; data?: { text?: unknown } }[]) {
+		if (e?.type !== "custom" || e.customType !== PIN_TYPE) continue;
+		const text = e.data?.text;
+		if (typeof text === "string" && text.trim()) out.push(text.trim());
+	}
+	return out;
 }
 
 const readUsage = (ctx: Ctx): Usage | undefined => {
@@ -58,26 +75,30 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		const config = deps.config();
 		ctx.compact({
 			customInstructions: controller.state().handoff,
-			onComplete: () => {
+			onComplete: (result) => {
 				const state = controller.state();
 				controller.compacted();
-				bus.emit(CHANNELS.done, { reason: state.reason, why, handoff: state.handoff !== undefined, tokensBefore: usage?.tokens, strategy: config.strategy });
+				const compactor = (result as { details?: { compactor?: unknown } } | undefined)?.details?.compactor;
+				bus.emit(CHANNELS.done, { reason: state.reason, why, handoff: state.handoff !== undefined, tokensBefore: usage?.tokens, strategy: config.strategy, compactor });
 				if (resume) pi.sendMessage({ customType: RESUME_TYPE, content: RESUME_TEXT, display: false }, { triggerTurn: true, deliverAs: "followUp" });
 				resume = false;
 				contributions = [];
+				why = undefined;
 			},
 			onError: (error) => {
 				controller.failed(usage ?? { tokens: 0, percent: 0, contextWindow: 0 });
 				resume = false;
+				why = undefined;
 				deps.notify(`compaction failed: ${error.message}`, "error");
 			},
 		});
 	};
 
-	const apply = (decision: Decision, boundary: Boundary, usage: Usage, config: CompactorConfig, ctx: Ctx) => {
+	const apply = (decision: Decision, boundary: Boundary, usage: Usage, config: CompactorConfig, ctx: Ctx, entries: readonly unknown[]) => {
 		if (decision.action === "preflight") {
 			if (boundary === "turn") resume = true;
-			return { entries: [preflightEntry(usage, config)], continue: true };
+			// Pi replaces event.entries with the returned list, so the drafts already there must be carried over.
+			return { entries: [...entries, preflightEntry(usage, config)], continue: true };
 		}
 		if (decision.action === "compact") {
 			why = decision.why;
@@ -90,7 +111,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		return undefined;
 	};
 
-	const onBoundary = (boundary: Boundary, outcome: string, ctx: Ctx, pendingTools: boolean) => {
+	const onBoundary = (boundary: Boundary, outcome: string, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[] = []) => {
 		if (outcome !== "completed") {
 			if (outcome === "aborted") controller.abort();
 			return undefined;
@@ -107,25 +128,67 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 			return undefined;
 		}
 		const decision = controller.atBoundary(boundary, usage, config, { criticalSections: sections.active().length, pendingTools });
-		return apply(decision, boundary, usage, config, ctx);
+		return apply(decision, boundary, usage, config, ctx, entries);
 	};
 
-	pi.on("turn_end", (event, ctx) => onBoundary("turn", event.outcome, ctx, event.toolResults.length > 0));
-	pi.on("agent_before_settle", (event, ctx) => onBoundary("settle", event.outcome, ctx, false));
+	pi.on("turn_end", (event, ctx) => onBoundary("turn", event.outcome, ctx, event.toolResults.length > 0, event.entries));
+	pi.on("agent_before_settle", (event, ctx) => onBoundary("settle", event.outcome, ctx, false, event.entries));
 	pi.on("agent_settled", (event, ctx) => {
 		if (event.aborted) {
 			controller.abort();
 			resume = false;
 			return;
 		}
-		if (controller.state().phase === "compacting") compactNow(ctx);
+		if (controller.state().phase === "compacting") {
+			why ??= "handoff ready";
+			compactNow(ctx);
+		}
 	});
 
-	pi.on("session_before_compact", (event, ctx) => {
-		if (event.reason !== "threshold") return undefined;
-		const usage = readUsage(ctx);
-		if (!usage) return undefined;
-		return controller.nativeCompaction(event.reason, usage, deps.config()) === "cancel" ? { cancel: true } : undefined;
+	pi.on("session_before_compact", async (event, ctx) => {
+		const config = deps.config();
+		if (event.reason === "threshold") {
+			const usage = readUsage(ctx);
+			if (usage && controller.nativeCompaction(event.reason, usage, config) === "cancel") return { cancel: true };
+		}
+		if (!config.enabled) return undefined;
+		const state = controller.state();
+		// Only the compaction this cycle asked for (ctx.compact reports "manual") may use the cycle's handoff.
+		const ours = event.reason === "manual" && state.phase === "compacting";
+		try {
+			const summarize = createSummarizer({
+				ctx,
+				summaryModel: config.summaryModel,
+				signal: event.signal,
+				serialize:
+					deps.serialize ??
+					(() => {
+						throw new Error("conversation serializer not available");
+					}),
+				warn: (text) => deps.notify(text, "warning"),
+			});
+			const built = await buildCompaction({
+				strategy: config.strategy,
+				preparation: event.preparation as unknown as Preparation,
+				branchEntries: event.branchEntries,
+				handoff: ours ? state.handoff : undefined,
+				contributions: ours ? contributions : [],
+				pins: config.pins,
+				manualPins: manualPins(event.branchEntries),
+				summarize,
+			});
+			const compactor: CompactorDetails & { reason: string; tokensBefore: number; why?: string } = {
+				...built.compaction.details.compactor,
+				reason: ours ? (state.reason ?? event.reason) : event.reason,
+				tokensBefore: event.preparation.tokensBefore,
+			};
+			if (ours && why !== undefined) compactor.why = why;
+			// firstKeptEntryId is typed string; null (retain-none) is honored by Pi's hook path (prototype/retain-none.test.ts).
+			return { compaction: { ...built.compaction, details: { compactor } } as never };
+		} catch (error) {
+			if (!event.signal.aborted) deps.notify(`compaction failed, using Pi's default: ${error instanceof Error ? error.message : String(error)}`, "warning");
+			return undefined;
+		}
 	});
 	pi.on("session_compact", (event) => {
 		// Pi compacted on its own (overflow, or the user ran /compact): our cycle is moot.
