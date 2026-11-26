@@ -1,4 +1,8 @@
-# pi-compactor
+# 🗜️ pi-compactor
+
+![pi-compactor: the agent hands off, then the press compacts the context](assets/preview.png)
+
+Phased context compaction for Pi: the agent hands off first, then the press comes down.
 
 Phased context compaction for [Pi](https://github.com/earendil-works). When the context gets full, pi-compactor waits for a safe moment, asks the agent to hand off its state, and then compacts. The handoff survives compaction and the agent picks up where it left off.
 

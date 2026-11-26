@@ -14,6 +14,7 @@
     "pi-package",
     "pi",
     "compaction",
+    "compactor",
     "context",
     "handoff",
     "agent"
@@ -22,7 +23,8 @@
   "pi": {
     "extensions": [
       "./extensions/compactor.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/jals1212/pi-compactor/main/assets/preview.png"
   },
   "files": [
     "src",
