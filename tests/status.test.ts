@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerCompactor } from "../src/wire.ts";
-import { fakePi } from "./helpers.ts";
+import { bigSession, fakePi } from "./helpers.ts";
 
 const turnEnd = (toolResults = 0, outcome = "completed") => ({ outcome, toolResults: Array.from({ length: toolResults }, () => ({})), entries: [], continue: false });
-const settle = (outcome = "completed") => ({ outcome, entries: [], continue: false });
+const settle = (outcome = "completed", context?: unknown) => ({ outcome, entries: [], continue: false, context });
 
 async function setup(options: Parameters<typeof fakePi>[0] = {}) {
 	const f = fakePi(options);
@@ -22,7 +22,8 @@ test("nothing is shown while the cycle is idle", async () => {
 });
 
 test("the status follows the phase with the usage percent, and clears when idle again", async () => {
-	const { f } = await setup();
+	const { f, api } = await setup();
+	api.settings.store().update("global", "strategy", "handoff-only");
 	f.setPercent(75);
 	await f.fire("turn_end", turnEnd(2));
 	assert.deepEqual(f.statuses.at(-1), ["compactor", "compactor: pending 75%"]);
@@ -30,8 +31,7 @@ test("the status follows the phase with the usage percent, and clears when idle 
 	assert.deepEqual(f.statuses.at(-1), ["compactor", "compactor: preflight 75%"]);
 	await f.tool("compaction_ready", { handoff: "Goal: x" });
 	assert.deepEqual(f.statuses.at(-1), ["compactor", "compactor: compacting 75%"]);
-	await f.fire("agent_settled", { aborted: false });
-	f.compacts[0].options.onComplete!({});
+	await f.fire("agent_before_settle", settle("completed", bigSession()));
 	assert.deepEqual(f.statuses.at(-1), ["compactor", undefined]);
 	assert.deepEqual(
 		f.statuses.map(([, t]) => t),
@@ -45,8 +45,7 @@ test("a failed compaction shows the cooldown", async () => {
 	f.setPercent(75);
 	await f.fire("agent_before_settle", settle());
 	await f.tool("compaction_ready", { handoff: "Goal: x" });
-	await f.fire("agent_settled", { aborted: false });
-	f.compacts[0].options.onError!(new Error("boom"));
+	await f.fire("agent_before_settle", settle("completed", { contextEntries: [] }));
 	assert.deepEqual(f.statuses.at(-1), ["compactor", "compactor: cooldown 75%"]);
 });
 

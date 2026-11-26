@@ -105,6 +105,14 @@ export interface FakePi {
 
 export const WINDOW = 100_000;
 
+/** A boundary projection larger than Pi's default keepRecentTokens (20000, chars/4): the cut keeps the second turn. */
+export const bigSession = () => ({
+	contextEntries: ["u1", "u2"].map((id) => {
+		const message = { role: "user", content: [{ type: "text", text: `${id} ${"x".repeat(100_000)}` }] };
+		return { sourceEntry: { type: "message", id, message }, messages: [message] };
+	}),
+});
+
 export function fakePi(options: { hasUI?: boolean; model?: FakeCtx["model"] } = {}): FakePi {
 	const root = mkdtempSync(join(tmpdir(), "compactor-wire-"));
 	const agentDir = join(root, "agent");

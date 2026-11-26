@@ -23,7 +23,7 @@ pi install npm:pi-compactor
 
    Critical sections (see below) also defer it. Deferral is bounded: at `hardThreshold`, or once the context has grown by `maxDeferTokens`, the cycle proceeds anyway.
 3. **Preflight.** The agent receives hidden instructions to finish or pause, save what must persist, and call `compaction_ready({ handoff })`. Preflight is bounded by `preflight.maxTurns` and `preflight.budgetTokens`. If either limit is reached, compaction runs without a handoff.
-4. **Compaction.** Runs only when the agent is idle, because a compaction aborts a running turn. If the cycle interrupted the work, a hidden resume message restarts it.
+4. **Compaction.** Written as a boundary entry while the run settles (or at a turn end when the hard limit leaves no headroom), so no turn is aborted and it works the same in interactive, print, JSON and RPC modes. The cut keeps about Pi's `compaction.keepRecentTokens` of recent context. If the cycle interrupted the work, a hidden resume message follows the compaction and the run continues in the same prompt. `/compactor now` while idle uses Pi's own compaction.
 
 Pi's own threshold compaction is cancelled while pi-compactor still has headroom. Overflow compaction is never cancelled.
 

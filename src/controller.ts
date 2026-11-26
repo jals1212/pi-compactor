@@ -118,6 +118,11 @@ export function createController() {
 			s = { phase: "cooldown", preflightTurns: 0, cooldownAt: usage.tokens };
 		},
 
+		/** The compaction being built was aborted: drop the whole cycle, compacting included. */
+		cancel(): void {
+			reset();
+		},
+
 		/** User abort: drop pending or preflight work. */
 		abort(): void {
 			if (s.phase !== "compacting") reset();

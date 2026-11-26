@@ -1,11 +1,14 @@
 // Runs the compaction cycle on Pi's lifecycle: arms on usage, injects the preflight as a hidden message at a safe
-// boundary, takes the handoff from the compaction_ready tool, compacts only when the agent is idle (ctx.compact
-// aborts a running turn) and resumes the work when the cycle interrupted it.
+// boundary, takes the handoff from the compaction_ready tool, then writes the compaction itself as a boundary draft
+// (plus a hidden resume message and `continue` when the cycle interrupted work). Pi awaits boundary handlers inside
+// the running prompt, so this works in every mode; `ctx.compact` is fire-and-forget and print mode disposes the
+// runtime (aborting it) as soon as the prompt resolves. `ctx.compact` remains only for `/compactor now` while idle.
 import type { BoundaryResult, ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactorConfig } from "./config.ts";
 import { planPruning } from "./pruning.ts";
 import { createController, type Boundary, type Decision, type Phase, type Usage } from "./controller.ts";
 import { buildCompaction, type CompactorDetails, type Preparation } from "./strategy.ts";
+import { KEEP_RECENT_TOKENS, prepareFromProjection } from "./prepare.ts";
 import { createSummarizer } from "./summarize.ts";
 import { CHANNELS, collectContributions, createCriticalSections, renderPreflight, type Contribution, type EventBus } from "./protocol.ts";
 
@@ -15,13 +18,17 @@ export const RESUME_TYPE = "compactor-resume";
 export const PIN_TYPE = "compactor-pin";
 export const RESUME_TEXT = "[compactor] The context was compacted. Continue the task from the handoff above; do not restart finished work.";
 
-type Ctx = Pick<ExtensionContext, "getContextUsage" | "compact">;
+type Ctx = Pick<ExtensionContext, "getContextUsage" | "compact"> & Partial<Pick<ExtensionContext, "signal" | "sessionManager">>;
 
 export interface CycleDeps {
 	config(): CompactorConfig;
 	notify(text: string, type?: "info" | "warning" | "error"): void;
 	/** Messages to readable text (Pi's `serializeConversation(convertToLlm(messages))`); injected as a runtime value. */
 	serialize?(messages: unknown[]): string;
+	/** Pi's `estimateTokens` (runtime value); defaults to chars/4. */
+	estimateTokens?(message: unknown): number;
+	/** Pi's `compaction.keepRecentTokens` for the session; defaults to Pi's 20000. */
+	keepRecentTokens?(ctx: unknown): number;
 	/** Called after the cycle may have changed phase (boundaries, compaction done or failed, requests, aborts). */
 	onChange?(phase: Phase, percent: number | undefined): void;
 }
@@ -100,7 +107,78 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		});
 	};
 
-	const apply = (decision: Decision, boundary: Boundary, usage: Usage, config: CompactorConfig, ctx: Ctx, entries: readonly unknown[]) => {
+	const fail = (message: string) => {
+		controller.failed(lastUsage ?? { tokens: 0, percent: 0, contextWindow: 0 });
+		resume = false;
+		why = undefined;
+		deps.notify(`compaction failed: ${message}`, "error");
+	};
+
+	/** The compaction as boundary drafts: after `entries`, the compaction, then (when work was interrupted) a hidden resume message. */
+	const compactAtBoundary = async (boundary: Boundary, ctx: Ctx, entries: readonly unknown[], context: unknown) => {
+		const config = deps.config();
+		const state = controller.state();
+		const projected = (context as { contextEntries?: unknown } | undefined)?.contextEntries;
+		let keep = KEEP_RECENT_TOKENS;
+		try {
+			keep = deps.keepRecentTokens?.(ctx) ?? KEEP_RECENT_TOKENS;
+		} catch {}
+		const preparation = Array.isArray(projected) ? prepareFromProjection(projected as never, keep, deps.estimateTokens) : undefined;
+		if (!preparation) {
+			fail("Nothing to compact (session too small)");
+			return undefined;
+		}
+		const signal = ctx.signal ?? new AbortController().signal;
+		const branch = (ctx.sessionManager as { getBranch?(): unknown[] } | undefined)?.getBranch?.() ?? (projected as { sourceEntry: unknown }[]).map((e) => e.sourceEntry);
+		try {
+			const built = await buildCompaction({
+				strategy: config.strategy,
+				preparation,
+				branchEntries: branch,
+				handoff: state.handoff,
+				contributions,
+				pins: config.pins,
+				manualPins: manualPins(branch),
+				summarize: summarizer(ctx, config, signal),
+			});
+			if (signal.aborted) {
+				controller.cancel();
+				resume = false;
+				return undefined;
+			}
+			const compactor: CompactorDetails & { reason: string; tokensBefore: number; why?: string } = {
+				...built.compaction.details.compactor,
+				reason: state.reason ?? "threshold",
+				tokensBefore: preparation.tokensBefore,
+			};
+			if (why !== undefined) compactor.why = why;
+			const draft: Record<string, unknown> = { type: "compaction", summary: built.compaction.summary, firstKeptEntryId: built.compaction.firstKeptEntryId, details: { compactor } };
+			if (built.compaction.usage !== undefined) draft.usage = built.compaction.usage;
+			const out: unknown[] = [...entries, draft];
+			// At a turn end the agent is mid-task; at settle only when the cycle interrupted it (preflight at a turn end).
+			const resumes = boundary === "turn" || resume;
+			if (resumes) out.push({ type: "custom_message", customType: RESUME_TYPE, content: RESUME_TEXT, display: false });
+			controller.compacted();
+			bus.emit(CHANNELS.done, { reason: state.reason, why, handoff: state.handoff !== undefined, tokensBefore: lastUsage?.tokens ?? preparation.tokensBefore, strategy: config.strategy, compactor });
+			resume = false;
+			contributions = [];
+			why = undefined;
+			return resumes ? { entries: out, continue: true } : { entries: out };
+		} catch (error) {
+			if (signal.aborted) {
+				controller.cancel();
+				resume = false;
+				return undefined;
+			}
+			fail(error instanceof Error ? error.message : String(error));
+			return undefined;
+		}
+	};
+
+	/** Marks a boundary where the cycle compacts (handled asynchronously by `onBoundary`). */
+	const COMPACT = Symbol("compact");
+
+	const apply = (decision: Decision, boundary: Boundary, usage: Usage, config: CompactorConfig, entries: readonly unknown[]) => {
 		if (decision.action === "preflight") {
 			if (boundary === "turn") resume = true;
 			// Pi replaces event.entries with the returned list, so the drafts already there must be carried over.
@@ -108,11 +186,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		}
 		if (decision.action === "compact") {
 			why = decision.why;
-			// At a turn end the agent is still running: compacting aborts it, so resume afterwards. At settle, wait for idle.
-			if (boundary === "turn") {
-				resume = true;
-				compactNow(ctx);
-			}
+			return COMPACT;
 		}
 		return undefined;
 	};
@@ -128,52 +202,72 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		return { edits: plan.edits, usage: { ...usage, tokens, percent: (tokens / usage.contextWindow) * 100 } };
 	};
 
-	const onBoundary = (...args: Parameters<typeof handleBoundary>) => {
+	const onBoundary = async (boundary: Boundary, outcome: string, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[] = [], context?: unknown) => {
 		try {
-			return handleBoundary(...args);
+			const result = handleBoundary(boundary, outcome, ctx, pendingTools, entries, context);
+			if (result === COMPACT) return await compactAtBoundary(boundary, ctx, entries, context);
+			return result;
 		} finally {
 			changed();
 		}
 	};
 
-	const handleBoundary = (boundary: Boundary, outcome: string, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[] = [], context?: unknown) => {
+	const handleBoundary = (boundary: Boundary, outcome: string, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[], context: unknown) => {
 		if (outcome !== "completed") {
 			if (outcome === "aborted") controller.abort();
 			return undefined;
 		}
+		const phaseBefore = controller.state().phase;
+		// The handoff is in: the run is settling, so compact now (the agent was told to stop after compaction_ready).
+		if (phaseBefore === "compacting" && boundary === "settle") {
+			why ??= "handoff ready";
+			return COMPACT;
+		}
 		const measured = readUsage(ctx);
 		if (!measured) return undefined;
 		const config = deps.config();
-		const phaseBefore = controller.state().phase;
 		const pruned = phaseBefore === "idle" || phaseBefore === "pending" ? prune(measured, config, context) : { edits: [], usage: measured };
 		const usage = pruned.usage;
 		lastUsage = usage;
 		controller.observe(usage, config);
-		const result = decide(boundary, usage, config, ctx, pendingTools, [...entries, ...pruned.edits]);
+		const result = decide(boundary, usage, config, pendingTools, [...entries, ...pruned.edits]);
+		if (result === COMPACT) return COMPACT;
 		if (result) return result;
 		return pruned.edits.length > 0 ? { entries: [...entries, ...pruned.edits] } : undefined;
 	};
 
-	const decide = (boundary: Boundary, usage: Usage, config: CompactorConfig, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[]) => {
+	const decide = (boundary: Boundary, usage: Usage, config: CompactorConfig, pendingTools: boolean, entries: readonly unknown[]) => {
 		const phase = controller.state().phase;
 		if (phase === "compacting" && boundary === "turn" && usage.percent >= config.hardThreshold) {
-			resume = true;
-			compactNow(ctx);
-			return undefined;
+			why ??= "hard limit while compacting";
+			return COMPACT;
 		}
 		const decision = controller.atBoundary(boundary, usage, config, { criticalSections: sections.active().length, pendingTools });
-		return apply(decision, boundary, usage, config, ctx, entries);
+		return apply(decision, boundary, usage, config, entries);
 	};
 
-	// Drafts are built as plain objects; Pi validates them when the boundary preview is rebuilt.
-	pi.on("turn_end", (event, ctx) => onBoundary("turn", event.outcome, ctx, event.toolResults.length > 0, event.entries, event.context) as BoundaryResult | undefined);
-	pi.on("agent_before_settle", (event, ctx) => onBoundary("settle", event.outcome, ctx, false, event.entries, event.context) as BoundaryResult | undefined);
+	const summarizer = (ctx: Ctx, config: CompactorConfig, signal: AbortSignal) =>
+		createSummarizer({
+			ctx: ctx as never,
+			summaryModel: config.summaryModel,
+			signal,
+			serialize:
+				deps.serialize ??
+				(() => {
+					throw new Error("conversation serializer not available");
+				}),
+			warn: (text) => deps.notify(text, "warning"),
+		});
+
+	// Drafts are built as plain objects; Pi validates them when the boundary preview is rebuilt. Pi awaits the handlers.
+	pi.on("turn_end", (event, ctx) => onBoundary("turn", event.outcome, ctx, event.toolResults.length > 0, event.entries, event.context) as Promise<BoundaryResult | undefined>);
+	pi.on("agent_before_settle", (event, ctx) => onBoundary("settle", event.outcome, ctx, false, event.entries, event.context) as Promise<BoundaryResult | undefined>);
 	pi.on("agent_settled", (event, ctx) => {
 		if (event.aborted) {
 			controller.abort();
 			resume = false;
-		} else if (controller.state().phase === "compacting") {
-			why ??= "handoff ready";
+		} else if (controller.state().phase === "compacting" && controller.state().reason === "manual") {
+			// `/compactor now` while the agent was running: Pi's own compaction once idle.
 			compactNow(ctx);
 		}
 		changed();
@@ -190,17 +284,7 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		// Only the compaction this cycle asked for (ctx.compact reports "manual") may use the cycle's handoff.
 		const ours = event.reason === "manual" && state.phase === "compacting";
 		try {
-			const summarize = createSummarizer({
-				ctx,
-				summaryModel: config.summaryModel,
-				signal: event.signal,
-				serialize:
-					deps.serialize ??
-					(() => {
-						throw new Error("conversation serializer not available");
-					}),
-				warn: (text) => deps.notify(text, "warning"),
-			});
+			const summarize = summarizer(ctx, config, event.signal);
 			const built = await buildCompaction({
 				strategy: config.strategy,
 				preparation: event.preparation as unknown as Preparation,

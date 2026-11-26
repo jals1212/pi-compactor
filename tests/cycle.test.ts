@@ -4,7 +4,7 @@ import { registerCompactor } from "../src/wire.ts";
 import { PIN_TYPE } from "../src/cycle.ts";
 import { fakePi, reply } from "./helpers.ts";
 
-const turnEnd = (toolResults = 0, outcome = "completed") => ({ outcome, toolResults: Array.from({ length: toolResults }, () => ({})), entries: [], continue: false });
+const turnEnd = (toolResults = 0, outcome = "completed", context?: unknown) => ({ outcome, toolResults: Array.from({ length: toolResults }, () => ({})), entries: [], continue: false, context });
 const user = (id: string, text: string) => ({ type: "message", id, message: { role: "user", text, content: [{ type: "text", text }] } });
 const assistant = (id: string, text: string) => ({ type: "message", id, message: { role: "assistant", text, content: [{ type: "text", text }] } });
 const branch = [user("u1", "Build the parser"), assistant("a1", "ok"), user("u2", "keep the old API"), assistant("a2", "done"), user("u3", "add tests")];
@@ -23,7 +23,9 @@ const compactEvent = (over: Record<string, unknown> = {}) => ({
 	},
 	...over,
 });
-const settle = (outcome = "completed") => ({ outcome, entries: [], continue: false });
+const settle = (outcome = "completed", context?: unknown) => ({ outcome, entries: [], continue: false, context });
+/** Pi's boundary projection of `branch`: every message weighs 500 tokens and keepRecentTokens is 500, so the cut is u3. */
+const session = () => ({ contextEntries: branch.map((e) => ({ sourceEntry: e, messages: [e.message] })) });
 
 async function setup(options: Parameters<typeof fakePi>[0] = {}) {
 	const f = fakePi(options);
@@ -32,7 +34,9 @@ async function setup(options: Parameters<typeof fakePi>[0] = {}) {
 		stderr: (t) => void f.stderr.push(t),
 		convertToLlm: (messages: unknown[]) => messages,
 		serializeConversation: (messages: unknown[]) => messages.map((m) => `[${(m as any).role}] ${(m as any).text}`).join("\n"),
-	});
+		estimateTokens: () => 500,
+		keepRecentTokens: () => 500,
+	} as never);
 	await f.fire("session_start", { reason: "startup" });
 	return { f, api };
 }
@@ -52,7 +56,7 @@ test("below the threshold every boundary is a no-op", async () => {
 	assert.equal(f.compacts.length, 0);
 });
 
-test("full cycle at settle: preflight, handoff, compact when idle, no resume", async () => {
+test("full cycle at settle: preflight, handoff, then the compaction is a settle draft with no resume", async () => {
 	const { f, api } = await setup();
 	f.setPercent(75);
 	// settle policy: a turn end with tool work only waits
@@ -69,14 +73,85 @@ test("full cycle at settle: preflight, handoff, compact when idle, no resume", a
 	const out = await f.tool("compaction_ready", { handoff: "Goal: ship T2" });
 	assert.match(out.content[0].text, /Handoff saved/);
 	assert.equal(api.cycle.state().phase, "compacting");
-	assert.deepEqual(await f.fire("agent_before_settle", settle()), [undefined]);
-	assert.equal(f.compacts.length, 0, "never compacts before the agent is idle");
-	await f.fire("agent_settled", { aborted: false });
-	assert.equal(f.compacts.length, 1);
-	f.compacts[0].options.onComplete!({});
+	const [compacted] = (await f.fire("agent_before_settle", settle("completed", session()))) as any[];
+	assert.equal(compacted.entries.length, 1);
+	assert.equal(compacted.entries[0].type, "compaction");
+	assert.equal(compacted.entries[0].firstKeptEntryId, "u3");
+	assert.match(compacted.entries[0].summary, /## Handoff\nGoal: ship T2/);
+	assert.equal(compacted.continue, undefined, "the agent had finished: nothing to resume");
 	assert.equal(api.cycle.state().phase, "idle");
+	await f.fire("agent_settled", { aborted: false });
+	assert.equal(f.compacts.length, 0, "Pi's fire-and-forget compaction is never used for the cycle");
 	assert.deepEqual(f.sent, []);
 	assert.equal(f.emitted.filter(([c]) => c === "compactor:done").length, 1);
+});
+
+test("a settle compaction keeps the drafts already at the boundary first", async () => {
+	const { f } = await setup();
+	await toCompacting(f);
+	const draft = { type: "custom", customType: "other-ext", data: 1 };
+	const [r] = (await f.fire("agent_before_settle", { ...settle("completed", session()), entries: [draft] })) as any[];
+	assert.equal(r.entries[0], draft);
+	assert.equal(r.entries[1].type, "compaction");
+});
+
+test("handoff-only at settle keeps nothing (firstKeptEntryId null) and never calls the LLM", async () => {
+	const { f, api } = await setup();
+	api.settings.store().update("global", "strategy", "handoff-only");
+	await toCompacting(f, "Goal: ship T8");
+	const [r] = (await f.fire("agent_before_settle", settle("completed", session()))) as any[];
+	assert.equal(r.entries[0].firstKeptEntryId, null);
+	assert.equal(f.completions.length, 0);
+	assert.match(r.entries[0].summary, /## Handoff\nGoal: ship T8/);
+	assert.equal(r.entries[0].details.compactor.strategy, "handoff-only");
+	assert.equal(r.entries[0].details.compactor.reason, "threshold");
+	assert.equal(r.entries[0].details.compactor.why, "handoff ready");
+});
+
+test("hybrid at settle summarizes the part before the cut and records the usage", async () => {
+	const { f } = await setup();
+	await toCompacting(f, "Goal: ship T8");
+	const [r] = (await f.fire("agent_before_settle", settle("completed", session()))) as any[];
+	const c = r.entries[0];
+	assert.equal(c.firstKeptEntryId, "u3");
+	assert.match(c.summary, /## Summary\nSUMMARY/);
+	assert.deepEqual(c.usage, { input: 10, output: 5 });
+	assert.equal(c.details.compactor.tokensBefore, 2500);
+	const prompt = f.completions[0].context.messages[0].content[0].text;
+	assert.match(prompt, /\[user\] Build the parser/);
+	assert.doesNotMatch(prompt, /add tests/, "the kept part is not summarized");
+});
+
+test("a session too small to cut fails the cycle with a notice and cools down", async () => {
+	const { f, api } = await setup();
+	await toCompacting(f);
+	assert.deepEqual(await f.fire("agent_before_settle", settle("completed", { contextEntries: [] })), [undefined]);
+	assert.deepEqual(f.notes.at(-1), ["compaction failed: Nothing to compact (session too small)", "error"]);
+	assert.equal(api.cycle.state().phase, "cooldown");
+	assert.equal(f.emitted.filter(([c]) => c === "compactor:done").length, 0);
+});
+
+test("a failing summary at settle fails the cycle instead of writing a compaction", async () => {
+	const { f, api } = await setup();
+	await toCompacting(f);
+	f.setReply(new Error("boom"));
+	assert.deepEqual(await f.fire("agent_before_settle", settle("completed", session())), [undefined]);
+	assert.match(f.notes.at(-1)![0], /^compaction failed: /);
+	assert.equal(api.cycle.state().phase, "cooldown");
+});
+
+test("an abort while the settle compaction is built writes nothing and drops the cycle", async () => {
+	const { f, api } = await setup();
+	await toCompacting(f);
+	const abort = new AbortController();
+	(f.ctx as any).signal = abort.signal;
+	f.setReply(() => {
+		abort.abort();
+		return reply("SUMMARY");
+	});
+	assert.deepEqual(await f.fire("agent_before_settle", settle("completed", session())), [undefined]);
+	assert.equal(api.cycle.state().phase, "idle");
+	assert.equal(f.emitted.filter(([c]) => c === "compactor:done").length, 0);
 });
 
 test("preflight started between turns resumes the work after compaction", async () => {
@@ -86,12 +161,13 @@ test("preflight started between turns resumes the work after compaction", async 
 	const [r] = (await f.fire("turn_end", turnEnd(0))) as any[];
 	assert.equal(r.continue, true);
 	await f.tool("compaction_ready", { handoff: "Goal: X" });
-	await f.fire("agent_settled", { aborted: false });
-	f.compacts[0].options.onComplete!({});
-	assert.equal(f.sent.length, 1);
-	assert.equal(f.sent[0][0].customType, "compactor-resume");
-	assert.equal(f.sent[0][0].display, false);
-	assert.deepEqual(f.sent[0][1], { triggerTurn: true, deliverAs: "followUp" });
+	const [c] = (await f.fire("agent_before_settle", settle("completed", session()))) as any[];
+	assert.deepEqual(c.entries.map((e: any) => e.type), ["compaction", "custom_message"]);
+	assert.equal(c.entries[1].customType, "compactor-resume");
+	assert.equal(c.entries[1].display, false);
+	assert.equal(c.continue, true, "the run continues inside the same prompt");
+	assert.deepEqual(f.sent, []);
+	assert.equal(f.compacts.length, 0);
 });
 
 test("compaction_ready outside a preflight says so and changes nothing", async () => {
@@ -129,25 +205,33 @@ test("preflight that runs out of turns compacts now, with resume", async () => {
 	const { f } = await setup();
 	f.setPercent(75);
 	await f.fire("agent_before_settle", settle());
-	await f.fire("turn_end", turnEnd(1));
-	await f.fire("turn_end", turnEnd(1));
+	assert.deepEqual(await f.fire("turn_end", turnEnd(1, "completed", session())), [undefined]);
+	assert.deepEqual(await f.fire("turn_end", turnEnd(1, "completed", session())), [undefined]);
+	const [c] = (await f.fire("turn_end", turnEnd(1, "completed", session()))) as any[];
+	assert.deepEqual(c.entries.map((e: any) => e.customType ?? e.type), ["compaction", "compactor-resume"]);
+	assert.equal(c.continue, true);
 	assert.equal(f.compacts.length, 0);
-	await f.fire("turn_end", turnEnd(1));
-	assert.equal(f.compacts.length, 1);
-	f.compacts[0].options.onComplete!({});
-	assert.equal(f.sent[0][0].customType, "compactor-resume");
 });
 
 test("a failed compaction notifies and cools down instead of looping", async () => {
 	const { f, api } = await setup();
-	f.setPercent(75);
+	await toCompacting(f);
 	await f.fire("agent_before_settle", settle());
-	await f.tool("compaction_ready", { handoff: "h" });
-	await f.fire("agent_settled", { aborted: false });
+	assert.equal(api.cycle.state().phase, "cooldown");
+	assert.deepEqual(f.notes.at(-1), ["compaction failed: Nothing to compact (session too small)", "error"]);
+	assert.deepEqual(await f.fire("agent_before_settle", settle("completed", session())), [undefined]);
+	assert.equal(f.compacts.length, 0);
+});
+
+test("/compactor now while idle still uses Pi's compaction; its failure cools down", async () => {
+	const { f, api } = await setup();
+	f.setPercent(75);
+	api.settings.store().update("global", "preflight.enabled", false);
+	api.cycle.request(f.ctx as never);
+	assert.equal(f.compacts.length, 1);
 	f.compacts[0].options.onError!(new Error("Nothing to compact"));
 	assert.equal(api.cycle.state().phase, "cooldown");
 	assert.deepEqual(f.notes.at(-1), ["compaction failed: Nothing to compact", "error"]);
-	assert.deepEqual(await f.fire("agent_before_settle", settle()), [undefined]);
 });
 
 test("an aborted run drops the preflight", async () => {
@@ -184,8 +268,7 @@ async function toCompacting(f: ReturnType<typeof fakePi>, handoff = "Goal: ship 
 	f.setPercent(75);
 	await f.fire("agent_before_settle", settle());
 	await f.tool("compaction_ready", { handoff });
-	await f.fire("agent_settled", { aborted: false });
-	assert.equal(f.compacts.length, 1);
+	assert.equal(f.compacts.length, 0);
 }
 
 test("hybrid is the default: summary of the old part, recent entries kept, files and pins appended", async () => {
@@ -237,7 +320,6 @@ test("a compaction the cycle asked for carries the handoff and records why", asy
 	assert.match(c.summary, /## Summary\nSUMMARY/);
 	assert.equal(c.details.compactor.handoff, true);
 	assert.equal(c.details.compactor.reason, "threshold");
-	assert.equal(typeof c.details.compactor.why, "string");
 	assert.match(f.completions[0].context.messages[0].content[0].text, /do not repeat it:\nGoal: ship T3/);
 });
 
@@ -377,12 +459,11 @@ test("an unknown summaryModel warns and uses the session model", async () => {
 test("the done event carries the compactor details of the compaction", async () => {
 	const { f } = await setup();
 	await toCompacting(f, "Goal: ship T3");
-	const [result] = (await f.fire("session_before_compact", compactEvent())) as any[];
-	f.compacts[0].options.onComplete!({ summary: result.compaction.summary, details: result.compaction.details });
+	const [result] = (await f.fire("agent_before_settle", settle("completed", session()))) as any[];
 	const done = f.emitted.filter(([c]) => c === "compactor:done");
 	assert.equal(done.length, 1);
 	const payload = done[0][1] as any;
-	assert.deepEqual(payload.compactor, result.compaction.details.compactor);
+	assert.deepEqual(payload.compactor, result.entries[0].details.compactor);
 	assert.equal(payload.handoff, true);
 	assert.equal(payload.strategy, "hybrid");
 });

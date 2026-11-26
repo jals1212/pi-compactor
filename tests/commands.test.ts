@@ -3,9 +3,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { test } from "node:test";
 import { PIN_TYPE } from "../src/cycle.ts";
 import { registerCompactor } from "../src/wire.ts";
-import { fakePi } from "./helpers.ts";
+import { bigSession, fakePi } from "./helpers.ts";
 
-const settle = (outcome = "completed") => ({ outcome, entries: [], continue: false });
+const settle = (outcome = "completed", context?: unknown) => ({ outcome, entries: [], continue: false, context });
 const SUBCOMMANDS = ["status", "now", "off", "on", "plan", "pin", "unpin", "settings"];
 
 async function setup(options: Parameters<typeof fakePi>[0] = {}) {
@@ -62,18 +62,19 @@ test("status lists critical sections and settings warnings", async () => {
 
 test("status reports the last compaction from compactor:done", async () => {
 	const { f, api } = await setup();
+	api.settings.store().update("global", "strategy", "handoff-only");
 	f.setPercent(75);
 	await f.fire("agent_before_settle", settle());
 	await f.tool("compaction_ready", { handoff: "Goal: x" });
-	await f.fire("agent_settled", { aborted: false });
-	f.compacts[0].options.onComplete!({ details: { compactor: { strategy: "handoff-only", fallback: "no valid handoff", handoff: true, pins: 2, readFiles: [], modifiedFiles: [] } } });
+	await f.fire("agent_before_settle", settle("completed", bigSession()));
 	await f.command("status");
 	const text = last(f)[0];
 	assert.ok(text.includes("phase: idle"), text);
-	assert.ok(
-		text.includes("last compaction: threshold (handoff ready) · strategy handoff-only · fallback: no valid handoff · 75000 tokens before · 2 pins · handoff yes"),
-		text,
-	);
+	assert.ok(text.includes("last compaction: threshold (handoff ready) · strategy handoff-only · fallback: none · 50028 tokens before · 0 pins · handoff yes"), text);
+	// A fallback recorded by any compaction is shown too.
+	f.emit("compactor:done", { reason: "manual", compactor: { strategy: "hybrid", fallback: "handoff-only without a handoff", handoff: false, pins: 2, readFiles: [], modifiedFiles: [] }, tokensBefore: 5 });
+	await f.command("status");
+	assert.ok(last(f)[0].includes("fallback: handoff-only without a handoff"), last(f)[0]);
 	assert.equal(api.cycle.state().phase, "idle");
 });
 

@@ -14,6 +14,10 @@ export interface WireOptions {
 	/** Pi's `convertToLlm` and `serializeConversation` (runtime exports); without them summaries fail and Pi's default compaction runs. */
 	convertToLlm?: (messages: never[]) => unknown;
 	serializeConversation?: (messages: never) => string;
+	/** Pi's `estimateTokens` (runtime export) for the compaction cut; defaults to chars/4. */
+	estimateTokens?: (message: never) => number;
+	/** Pi's `compaction.keepRecentTokens` for this session; defaults to 20000. */
+	keepRecentTokens?: (ctx: never) => number;
 }
 
 export interface Settings {
@@ -73,7 +77,13 @@ export function registerCompactor(pi: ExtensionAPI, options: WireOptions): Compa
 	const status = createStatus((text) => {
 		if (ctx?.hasUI) ctx.ui.setStatus(STATUS_KEY, text);
 	});
-	const cycle = registerCycle(pi, { config: current, notify, serialize, onChange: (phase, percent) => status.update(phase, percent) });
+	const cycle = registerCycle(pi, {
+		config: current,
+		notify,
+		serialize,
+		estimateTokens: options.estimateTokens as ((message: unknown) => number) | undefined,
+		keepRecentTokens: options.keepRecentTokens as ((ctx: unknown) => number) | undefined,
+		onChange: (phase, percent) => status.update(phase, percent) });
 	registerCommands(pi, {
 		cycle,
 		settings,
