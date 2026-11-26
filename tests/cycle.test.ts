@@ -403,3 +403,48 @@ test("the preflight is appended to the drafts already at the boundary, never rep
 	const [r] = (await turn.f.fire("turn_end", { ...turnEnd(0), entries: [draft] })) as any[];
 	assert.deepEqual(r.entries.map((e: any) => e.customType), ["other-ext", "compactor-preflight"]);
 });
+
+// Pruning: old large tool outputs are pruned first when the soft threshold is crossed.
+const big = "x".repeat(40_000); // ~10k tokens
+const projected = (entry: any) => ({ sourceEntry: entry, messages: entry.type === "message" ? [entry.message] : [] });
+function prunableContext() {
+	const e = [
+		{ type: "message", id: "u1", message: { role: "user", content: [{ type: "text", text: "go" }] } },
+		{ type: "message", id: "a1", message: { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "ls" } }] } },
+		{ type: "message", id: "t1", message: { role: "toolResult", toolCallId: "c1", toolName: "bash", isError: false, content: [{ type: "text", text: big }] } },
+		...[2, 3, 4, 5].map((n) => ({ type: "message", id: `u${n}`, message: { role: "user", content: [{ type: "text", text: `turn ${n}` }] } })),
+	];
+	return { contextEntries: e.map(projected) };
+}
+
+test("pruning alone brings usage under the soft threshold: edits are returned and no cycle starts", async () => {
+	const { f, api } = await setup();
+	f.setPercent(72); // 72k tokens; pruning saves ~10k -> 62%
+	const prior = { type: "custom", customType: "other", data: 1 };
+	const [r] = (await f.fire("turn_end", { ...turnEnd(1), entries: [prior], context: prunableContext() })) as any[];
+	assert.equal(r.entries[0], prior);
+	assert.equal(r.entries.length, 2);
+	assert.equal(r.entries[1].type, "context_edit");
+	assert.equal(r.entries[1].targetId, "t1");
+	assert.equal(r.continue, undefined);
+	assert.equal(api.cycle.state().phase, "idle");
+});
+
+test("when pruning is not enough the preflight comes with the edits", async () => {
+	const { f, api } = await setup();
+	f.setPercent(85);
+	const [r] = (await f.fire("agent_before_settle", { ...settle(), context: prunableContext() })) as any[];
+	assert.deepEqual(r.entries.map((e: any) => e.type), ["context_edit", "custom_message"]);
+	assert.equal(r.continue, true);
+	assert.equal(api.cycle.state().phase, "preflight");
+});
+
+test("pruning disabled or below the threshold returns no edits", async () => {
+	const { f, api } = await setup();
+	f.setPercent(50);
+	assert.deepEqual(await f.fire("turn_end", { ...turnEnd(1), context: prunableContext() }), [undefined]);
+	api.settings.store().update("global", "pruning.enabled", false);
+	f.setPercent(72);
+	assert.deepEqual(await f.fire("turn_end", { ...turnEnd(1), context: prunableContext() }), [undefined]);
+	assert.equal(api.cycle.state().phase, "pending");
+});

@@ -3,6 +3,7 @@
 // aborts a running turn) and resumes the work when the cycle interrupted it.
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { CompactorConfig } from "./config.ts";
+import { planPruning } from "./pruning.ts";
 import { createController, type Boundary, type Decision, type Usage } from "./controller.ts";
 import { buildCompaction, type CompactorDetails, type Preparation } from "./strategy.ts";
 import { createSummarizer } from "./summarize.ts";
@@ -111,16 +112,36 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		return undefined;
 	};
 
-	const onBoundary = (boundary: Boundary, outcome: string, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[] = []) => {
+	/** Prune old large tool outputs once usage crosses the soft threshold; returns the edits and the usage they leave. */
+	const prune = (usage: Usage, config: CompactorConfig, context: unknown) => {
+		const contextEntries = (context as { contextEntries?: unknown } | undefined)?.contextEntries;
+		if (!config.pruning.enabled || !Array.isArray(contextEntries) || usage.percent < config.softThreshold) return { edits: [], usage };
+		const target = usage.tokens - ((config.softThreshold - 5) / 100) * usage.contextWindow;
+		const plan = planPruning(contextEntries as never, config.pruning, { targetTokens: Math.max(1, target) });
+		if (plan.edits.length === 0) return { edits: [], usage };
+		const tokens = Math.max(0, usage.tokens - plan.savedTokens);
+		return { edits: plan.edits, usage: { ...usage, tokens, percent: (tokens / usage.contextWindow) * 100 } };
+	};
+
+	const onBoundary = (boundary: Boundary, outcome: string, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[] = [], context?: unknown) => {
 		if (outcome !== "completed") {
 			if (outcome === "aborted") controller.abort();
 			return undefined;
 		}
-		const usage = readUsage(ctx);
-		if (!usage) return undefined;
-		lastUsage = usage;
+		const measured = readUsage(ctx);
+		if (!measured) return undefined;
 		const config = deps.config();
+		const phaseBefore = controller.state().phase;
+		const pruned = phaseBefore === "idle" || phaseBefore === "pending" ? prune(measured, config, context) : { edits: [], usage: measured };
+		const usage = pruned.usage;
+		lastUsage = usage;
 		controller.observe(usage, config);
+		const result = decide(boundary, usage, config, ctx, pendingTools, [...entries, ...pruned.edits]);
+		if (result) return result;
+		return pruned.edits.length > 0 ? { entries: [...entries, ...pruned.edits] } : undefined;
+	};
+
+	const decide = (boundary: Boundary, usage: Usage, config: CompactorConfig, ctx: Ctx, pendingTools: boolean, entries: readonly unknown[]) => {
 		const phase = controller.state().phase;
 		if (phase === "compacting" && boundary === "turn" && usage.percent >= config.hardThreshold) {
 			resume = true;
@@ -131,8 +152,8 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		return apply(decision, boundary, usage, config, ctx, entries);
 	};
 
-	pi.on("turn_end", (event, ctx) => onBoundary("turn", event.outcome, ctx, event.toolResults.length > 0, event.entries));
-	pi.on("agent_before_settle", (event, ctx) => onBoundary("settle", event.outcome, ctx, false, event.entries));
+	pi.on("turn_end", (event, ctx) => onBoundary("turn", event.outcome, ctx, event.toolResults.length > 0, event.entries, event.context));
+	pi.on("agent_before_settle", (event, ctx) => onBoundary("settle", event.outcome, ctx, false, event.entries, event.context));
 	pi.on("agent_settled", (event, ctx) => {
 		if (event.aborted) {
 			controller.abort();
