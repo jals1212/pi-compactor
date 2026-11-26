@@ -5,7 +5,7 @@ import { resolveConfig, type CompactorConfig } from "./config.ts";
 import { createStore, type Store } from "./store.ts";
 import { registerCycle, type Cycle } from "./cycle.ts";
 import { registerCommands, type CommandCtx } from "./commands.ts";
-import { createStatus, STATUS_KEY } from "./status.ts";
+import { createStatus, STATUS_KEY, type StatusView } from "./status.ts";
 
 export interface WireOptions {
 	agentDir: string;
@@ -27,7 +27,7 @@ export interface Settings {
 	warnings(): string[];
 }
 
-type Ctx = Pick<ExtensionContext, "cwd" | "hasUI" | "ui" | "model">;
+type Ctx = Pick<ExtensionContext, "cwd" | "hasUI" | "ui" | "model" | "getContextUsage">;
 
 export const modelKey = (model: { provider: string; id: string } | undefined) => (model ? `${model.provider}/${model.id}` : undefined);
 
@@ -60,35 +60,55 @@ export function registerCompactor(pi: ExtensionAPI, options: WireOptions): Compa
 		return resolved.config;
 	};
 
+	/** Cycle phase and last observed percent; the cycle reports them, the footer also reads the live usage and config. */
+	let cycleView: { phase: StatusView["phase"]; percent: number | undefined } = { phase: "idle", percent: undefined };
+	const status = createStatus((text) => {
+		if (ctx?.hasUI) ctx.ui.setStatus(STATUS_KEY, text);
+	});
+	/** Recompute the always-on footer status from the cycle, Pi's usage and the effective config. */
+	const refreshStatus = () => {
+		if (!ctx?.hasUI) return;
+		// Quiet read: warnings are notified by `current()` at the points that already do so, never by the footer.
+		const loaded = store().load();
+		const config = resolveConfig({ global: loaded.global, project: loaded.project, model }).config;
+		const u = ctx.getContextUsage?.();
+		const usage = u && u.tokens !== null && u.percent !== null ? { tokens: u.tokens, percent: u.percent, contextWindow: u.contextWindow } : undefined;
+		status.update({ ...cycleView, enabled: config.enabled, softThreshold: config.softThreshold, usage });
+	};
+
 	pi.on("session_start", (_event, c) => {
 		ctx = c;
 		model = modelKey(c.model);
 		current();
+		refreshStatus();
 	});
 	pi.on("model_select", (event, c) => {
 		ctx = c;
 		model = modelKey(event.model);
 		current();
+		refreshStatus();
 	});
 
 	const settings: Settings = { current, store, warnings: () => warnings };
 	const { convertToLlm, serializeConversation } = options;
 	const serialize = convertToLlm && serializeConversation ? (messages: unknown[]) => serializeConversation(convertToLlm(messages as never[]) as never) : undefined;
-	const status = createStatus((text) => {
-		if (ctx?.hasUI) ctx.ui.setStatus(STATUS_KEY, text);
-	});
 	const cycle = registerCycle(pi, {
 		config: current,
 		notify,
 		serialize,
 		estimateTokens: options.estimateTokens as ((message: unknown) => number) | undefined,
 		keepRecentTokens: options.keepRecentTokens as ((ctx: unknown) => number) | undefined,
-		onChange: (phase, percent) => status.update(phase, percent) });
+		onChange: (phase, percent) => {
+			cycleView = { phase, percent };
+			refreshStatus();
+		},
+	});
 	registerCommands(pi, {
 		cycle,
 		settings,
 		modelKey,
 		use: (c: CommandCtx) => void (ctx = c),
+		changed: refreshStatus,
 		say: (c, text, level = "info") => {
 			if (c.hasUI) c.ui.notify(text, level);
 			else stderr(`[compactor] ${text}\n`);

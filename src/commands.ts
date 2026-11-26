@@ -17,6 +17,8 @@ export interface CommandDeps {
 	say(ctx: CommandCtx, text: string, level?: Level): void;
 	/** Make `ctx` the context settings notices go to. */
 	use(ctx: CommandCtx): void;
+	/** Called after every subcommand (settings and on/off may have changed the effective config). */
+	changed?(): void;
 }
 
 const SUBCOMMANDS: { name: string; usage: string; description: string }[] = [
@@ -187,6 +189,12 @@ export function registerCommands(pi: ExtensionAPI, deps: CommandDeps) {
 			if (/\s/.test(prefix)) return null;
 			return SUBCOMMANDS.filter((s) => s.name.startsWith(prefix)).map((s) => ({ value: s.name, label: s.name, description: s.description }));
 		},
-		handler: (args, ctx) => run(args, ctx),
+		handler: async (args, ctx) => {
+			try {
+				await run(args, ctx);
+			} finally {
+				deps.changed?.();
+			}
+		},
 	});
 }

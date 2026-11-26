@@ -41,6 +41,20 @@ Pi's own threshold compaction is cancelled while pi-compactor still has headroom
 
 Every strategy also keeps pins verbatim (the original request, user corrections, manual pins) and the cumulative lists of read and modified files.
 
+## Footer status
+
+With a UI, the footer always shows a `compactor` status. The distance is measured against your own `softThreshold` for the current model, not Pi's built-in threshold.
+
+| State | Text |
+| --- | --- |
+| Idle, usage known | `compactor: 620k to compact` (tokens left until `softThreshold` of the model's window; `999`, `620k`, `1.2M`) |
+| Idle, at or past the threshold | `compactor: due 82%` |
+| Cycle running | `compactor: pending 75%`, `preflight 75%`, `compacting 75%` or `cooldown 75%` |
+| Automatic compaction off (`enabled: false`, `/compactor off`) | `compactor: off` |
+| Usage unknown (right after a compaction) | `compactor` |
+
+It updates at each turn end and settle, on session start and model change, and after every `/compactor` command (including settings and on/off).
+
 ## Commands
 
 | Command | Effect |
