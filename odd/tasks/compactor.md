@@ -22,6 +22,8 @@ Status: IMPLEMENTING on branch feat/compactor (L11 "go go go").
 
 - S12. "deberíamos tener algo en el status que muestre nuestro propio" (referring to gentle-shell's footer `ctx 8% (900k to compact)`, which reflects Pi's own threshold) — the footer status shows the compactor's own distance to compaction while idle (tokens left until `softThreshold` of the current model's window), the phase while a cycle runs, and that it is off when disabled.
 
+- S13. "busquemos una identidad del paquete, así como relay y como spaces, mox, elige un emoji y una linea grafica" — chosen by the parent: emoji 🗜️ (the press, from L8 "algo como una prensa, que compacta") in the README title and as the footer status prefix; industrial-press palette (bg #15181c, steel #8a96a3, text #e6e8ea, single accent safety yellow #f5b800 with hazard stripes); `assets/preview.html` + `assets/preview.png` banner wired through `pi.image`; one-line tagline "Phased context compaction for Pi: the agent hands off first, then the press comes down."; `compactor` keyword.
+
 ## Tasks
 
 | ID | Specs | Task | Route | Commit |
@@ -33,6 +35,7 @@ Status: IMPLEMENTING on branch feat/compactor (L11 "go go go").
 | T5 | S5 | Agnostic `pi.events` contribution protocol + configurable template | inline | 48f0a8f, a6d1f97 |
 | T6 | S3, S11 | Commands, TUI settings editor (all configs, scopes, validation), status indicator, metrics in details | worker (context backstop) | cf6a025 (done) |
 | T7 | S1-S9 | README/docs, final verification | inline | 98af65b, f66f886, 8f7b248 (done; live evidence L17) |
+| T12 | S13 | Package identity: 🗜️ README header + banner + tagline, footer prefix glyph, package.json `pi.image` and keyword, following pi-mox/pi-spaces/pi-claude-relay conventions | worker | pending |
 | T11 | S12 | Always-on footer status: idle `compactor: <N>k to compact` from usage and effective softThreshold; phases as today; `compactor: off` when disabled; unknown usage shows just the name | worker (context backstop) | eb89ac4 (done: 175 tests, tsc clean) |
 | T10 | S2, S5, S9 | Route by `ctx.mode`: `tui`/`rpc` compact through `ctx.compact` (Pi fires `session_compact`, so Engram and other listeners see it; idle at settle, resume via followUp, turn-forced aborts and resumes); `print`/`json` and unknown modes keep the settle/turn boundary draft | worker (context backstop) | 0f8e6c5 (done: 165 tests, tsc clean) |
 | T9 | S9 | `src/prepare.ts` parity with Pi 1.6.1 `findProjectedCutPoint`/`prepareCompaction` (installed `npm-earendil-works-pi-coding-agent/latest`): zero-token skip, recovery-omission advance, split-turn fallback, file ops seeded from the previous compaction if not already covered; tests per rule | worker (context backstop) | 43450c1 (done: 158 tests, tsc clean) |
@@ -102,3 +105,4 @@ Status: IMPLEMENTING on branch feat/compactor (L11 "go go go").
 - L26. User: "publicalo". Issue published: https://github.com/earendil-works/pi/issues/12598 (body = the draft in `odd/issues/`).
 - L27. User: "publicamos para yo probar en vivo". Published GitHub repo https://github.com/jals1212/pi-compactor (public; `main` = feat/compactor HEAD, default branch; both branches pushed; tag v0.1.0). npm publish of 0.1.0 blocked: package.json `publishConfig.provenance: true` fails locally ("Automatic provenance generation not supported for provider: null"); with `--provenance=false` npm requires the user's 2FA web authentication (EOTP). Pending: user runs the publish, or a release workflow like pi-mox's.
 - L28. User (screenshot of gentle-shell footer `ctx 8% (900k to compact)`): "mira esto que tiene gentle-shell, no sé si es de Pi ... pero deberíamos tener algo en el status que muestre nuestro propio". Added S12, task T11. Source of that footer not located (bounded grep found nothing in gentle-pi or extensions); it matches Pi's native threshold.
+- L29. User: "en paralelo busquemos una identidad del paquete, así como relay y como spaces, mox, elige un emoji y una linea grafica". Explorer mapped siblings: one glyph in README title and status prefix (·MOX·, 🪐, ⎍), `assets/preview.html` -> `preview.png` banner with a dark palette and one accent, `pi.image` raw GitHub URL, name keyword. Parent chose S13. T11 verified by parent (175 tests, tsc clean, RDD assess medium/not due) and released as v0.1.1 (07e549b).
