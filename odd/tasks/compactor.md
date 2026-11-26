@@ -25,10 +25,10 @@ Status: IMPLEMENTING on branch feat/compactor (L11 "go go go").
 | ID | Specs | Task | Route | Commit |
 |----|-------|------|-------|--------|
 | T1 | S4, S6 | Package scaffold, config schema/resolution (global/project/model), validation | inline | 9e65cf9 (done, 24 tests) |
-| T2 | S2, S9, S10 | Threshold detector + safe-point/deferral policy + preflight state machine + `compaction_ready` tool + resume | inline | |
-| T3 | S7, S8, S9 | Strategies (summary/hybrid/handoff-only), pins, cumulative file lists, summary model | inline | |
-| T4 | S3 | Pruning of old tool outputs via context_edit | inline | |
-| T5 | S5 | Agnostic `pi.events` contribution protocol + configurable template | inline | |
+| T2 | S2, S9, S10 | Threshold detector + safe-point/deferral policy + preflight state machine + `compaction_ready` tool + resume | inline | a6d1f97 (done) |
+| T3 | S7, S8, S9 | Strategies (summary/hybrid/handoff-only), pins, cumulative file lists, summary model | builder inline (src/strategy.ts); wiring → worker | |
+| T4 | S3 | Pruning of old tool outputs via context_edit | worker | |
+| T5 | S5 | Agnostic `pi.events` contribution protocol + configurable template | inline | 48f0a8f, a6d1f97 |
 | T6 | S3, S11 | Commands, TUI settings editor (all configs, scopes, validation), status indicator, metrics in details | inline | |
 | T7 | S1-S9 | README/docs, final verification | inline | |
 
@@ -74,3 +74,8 @@ Status: IMPLEMENTING on branch feat/compactor (L11 "go go go").
 - L9. User "Sí" to renaming the command to `/compactor`, event channels to `compactor:*`, project config to `.pi/compactor.json`, the directory to `pi-compactor`, and this document to `odd/tasks/compactor.md`.
 - L10. User "seguimos" → chose "Prototipo de la brecha primero" (prove retain-none before coding T1). Result recorded in the Evidence GAP line.
 - L11. User "go go go" after the prototype result: implementation authorized; T1 done in 9e65cf9.
+
+## Implementation notes (for workers)
+
+- Layout: `src/config.ts` (schema FIELDS/DEFAULTS, resolveConfig, setPath/parseValue), `src/store.ts` (files), `src/controller.ts` (pure cycle state machine), `src/protocol.ts` (pi.events + template), `src/cycle.ts` (Pi wiring of the cycle, tools `compaction_ready`/`compaction_defer`), `src/strategy.ts` (pure `buildCompaction`, pins, file lists), `src/wire.ts` (`registerCompactor` composes everything), `extensions/compactor.ts` (entry). Tests: `tests/*.test.ts` with the fake Pi in `tests/helpers.ts`; run `npm test`.
+- Pi facts: `ctx.compact()` aborts a running turn, so compaction runs only at `agent_settled`; preflight is a hidden `custom_message` boundary draft + `continue: true`; Pi caps no continue loops; Pi does not auto-continue after threshold compaction (we send `compactor-resume`); `session_before_compact` honors `cancel` for every reason; `pi.events` listeners are isolated and must act synchronously; `firstKeptEntryId: null` from the hook is retain-none (prototype/retain-none.test.ts).
