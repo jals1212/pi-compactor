@@ -616,3 +616,30 @@ test("pruning disabled or below the threshold returns no edits", async () => {
 	assert.deepEqual(await f.fire("turn_end", { ...turnEnd(1), context: prunableContext() }), [undefined]);
 	assert.equal(api.cycle.state().phase, "pending");
 });
+
+test("Pi route: a compaction already running is never requested again", async () => {
+	const { f } = await setup({ mode: "tui" } as never);
+	await toCompacting(f);
+	await f.fire("agent_settled", { aborted: false });
+	await f.fire("agent_settled", { aborted: false });
+	assert.equal(f.compacts.length, 1, "the second settle waits for the running compaction");
+	f.compacts[0].options.onError!(new Error("boom"));
+	assert.equal(f.compacts.length, 1);
+});
+
+test("Pi route: a compaction Pi refuses synchronously fails the cycle and unlocks the next request", async () => {
+	const { f, api } = await setup({ mode: "tui" } as never);
+	await toCompacting(f);
+	const original = f.ctx.compact;
+	f.ctx.compact = () => {
+		throw new Error("Already compacted");
+	};
+	await f.fire("agent_settled", { aborted: false });
+	assert.equal(api.cycle.state().phase, "cooldown");
+	assert.deepEqual(f.notes.at(-1), ["compaction failed: Already compacted", "error"]);
+	f.ctx.compact = original;
+	f.setPercent(75);
+	api.settings.store().update("global", "preflight.enabled", false);
+	api.cycle.request(f.ctx as never);
+	assert.equal(f.compacts.length, 1, "the guard was released");
+});

@@ -86,30 +86,45 @@ export function registerCycle(pi: ExtensionAPI, deps: CycleDeps) {
 		};
 	};
 
+	/** Pi's compaction is fire-and-forget: one request at a time until it completes or fails. */
+	let inFlight = false;
 	const compactNow = (ctx: Ctx) => {
+		if (inFlight) return;
+		inFlight = true;
 		const usage = lastUsage;
 		const config = deps.config();
-		ctx.compact({
-			customInstructions: controller.state().handoff,
-			onComplete: (result) => {
-				const state = controller.state();
-				controller.compacted();
-				const compactor = (result as { details?: { compactor?: unknown } } | undefined)?.details?.compactor;
-				bus.emit(CHANNELS.done, { reason: state.reason, why, handoff: state.handoff !== undefined, tokensBefore: usage?.tokens, strategy: config.strategy, compactor });
-				if (resume) pi.sendMessage({ customType: RESUME_TYPE, content: RESUME_TEXT, display: false }, { triggerTurn: true, deliverAs: "followUp" });
-				resume = false;
-				contributions = [];
-				why = undefined;
-				changed();
-			},
-			onError: (error) => {
-				controller.failed(usage ?? { tokens: 0, percent: 0, contextWindow: 0 });
-				resume = false;
-				why = undefined;
-				deps.notify(`compaction failed: ${error.message}`, "error");
-				changed();
-			},
-		});
+		try {
+			ctx.compact({
+				customInstructions: controller.state().handoff,
+				onComplete: (result) => {
+					inFlight = false;
+					const state = controller.state();
+					controller.compacted();
+					const compactor = (result as { details?: { compactor?: unknown } } | undefined)?.details?.compactor;
+					bus.emit(CHANNELS.done, { reason: state.reason, why, handoff: state.handoff !== undefined, tokensBefore: usage?.tokens, strategy: config.strategy, compactor });
+					if (resume) pi.sendMessage({ customType: RESUME_TYPE, content: RESUME_TEXT, display: false }, { triggerTurn: true, deliverAs: "followUp" });
+					resume = false;
+					contributions = [];
+					why = undefined;
+					changed();
+				},
+				onError: (error) => {
+					inFlight = false;
+					controller.failed(usage ?? { tokens: 0, percent: 0, contextWindow: 0 });
+					resume = false;
+					why = undefined;
+					deps.notify(`compaction failed: ${error.message}`, "error");
+					changed();
+				},
+			});
+		} catch (error) {
+			inFlight = false;
+			controller.failed(usage ?? { tokens: 0, percent: 0, contextWindow: 0 });
+			resume = false;
+			why = undefined;
+			deps.notify(`compaction failed: ${error instanceof Error ? error.message : String(error)}`, "error");
+			changed();
+		}
 	};
 
 	const fail = (message: string) => {
