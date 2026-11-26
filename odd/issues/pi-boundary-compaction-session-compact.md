@@ -1,4 +1,4 @@
-# Draft issue for earendil-works/pi (not sent; the user decides)
+# Issue for earendil-works/pi (sent: https://github.com/earendil-works/pi/issues/12598)
 
 Repository: https://github.com/earendil-works/pi
 
