@@ -3,6 +3,8 @@
 import type { Phase } from "./controller.ts";
 
 export const STATUS_KEY = "compactor";
+/** Footer prefix: the press, without a variation selector so it stays 1-2 cells wide. */
+export const BRAND = "🗜";
 
 export interface StatusView {
 	phase: Phase;
@@ -24,14 +26,14 @@ export function formatTokens(tokens: number): string {
 
 /** Text for the footer. */
 export function statusText(view: StatusView): string {
-	if (view.phase !== "idle") return view.percent === undefined ? `compactor: ${view.phase}` : `compactor: ${view.phase} ${Math.round(view.percent)}%`;
-	if (!view.enabled) return "compactor: off";
+	if (view.phase !== "idle") return view.percent === undefined ? `${BRAND} ${view.phase}` : `${BRAND} ${view.phase} ${Math.round(view.percent)}%`;
+	if (!view.enabled) return `${BRAND} off`;
 	const { usage } = view;
-	if (!usage || usage.contextWindow <= 0) return "compactor";
+	if (!usage || usage.contextWindow <= 0) return BRAND;
 	const distance = Math.max(0, (view.softThreshold / 100) * usage.contextWindow - usage.tokens);
 	// Idle at or past the threshold (pruning, or the cycle has not armed yet): no distance left, show the usage.
-	if (Math.round(distance) === 0) return `compactor: due ${Math.round(usage.percent)}%`;
-	return `compactor: ${formatTokens(distance)} to compact`;
+	if (Math.round(distance) === 0) return `${BRAND} due ${Math.round(usage.percent)}%`;
+	return `${BRAND} ${formatTokens(distance)} to compact`;
 }
 
 export interface Status {

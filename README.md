@@ -43,15 +43,15 @@ Every strategy also keeps pins verbatim (the original request, user corrections,
 
 ## Footer status
 
-With a UI, the footer always shows a `compactor` status. The distance is measured against your own `softThreshold` for the current model, not Pi's built-in threshold.
+With a UI, the footer always shows a `🗜` status (status key `compactor`). The distance is measured against your own `softThreshold` for the current model, not Pi's built-in threshold.
 
 | State | Text |
 | --- | --- |
-| Idle, usage known | `compactor: 620k to compact` (tokens left until `softThreshold` of the model's window; `999`, `620k`, `1.2M`) |
-| Idle, at or past the threshold | `compactor: due 82%` |
-| Cycle running | `compactor: pending 75%`, `preflight 75%`, `compacting 75%` or `cooldown 75%` |
-| Automatic compaction off (`enabled: false`, `/compactor off`) | `compactor: off` |
-| Usage unknown (right after a compaction) | `compactor` |
+| Idle, usage known | `🗜 620k to compact` (tokens left until `softThreshold` of the model's window; `999`, `620k`, `1.2M`) |
+| Idle, at or past the threshold | `🗜 due 82%` |
+| Cycle running | `🗜 pending 75%`, `preflight 75%`, `compacting 75%` or `cooldown 75%` |
+| Automatic compaction off (`enabled: false`, `/compactor off`) | `🗜 off` |
+| Usage unknown (right after a compaction) | `🗜` |
 
 It updates at each turn end and settle, on session start and model change, and after every `/compactor` command (including settings and on/off).
 
