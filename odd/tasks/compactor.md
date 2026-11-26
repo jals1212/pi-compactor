@@ -29,8 +29,8 @@ Status: IMPLEMENTING on branch feat/compactor (L11 "go go go").
 | T3 | S7, S8, S9 | Strategies (summary/hybrid/handoff-only), pins, cumulative file lists, summary model | builder inline; wiring worker | 1fdb163, fb2b1df (done) |
 | T4 | S3 | Pruning of old tool outputs via context_edit | planner worker, wiring inline | a407df1 + next commit (done) |
 | T5 | S5 | Agnostic `pi.events` contribution protocol + configurable template | inline | 48f0a8f, a6d1f97 |
-| T6 | S3, S11 | Commands, TUI settings editor (all configs, scopes, validation), status indicator, metrics in details | worker (context backstop) | |
-| T7 | S1-S9 | README/docs, final verification | inline | |
+| T6 | S3, S11 | Commands, TUI settings editor (all configs, scopes, validation), status indicator, metrics in details | worker (context backstop) | cf6a025 (done) |
+| T7 | S1-S9 | README/docs, final verification | inline | 98af65b, f66f886 (live full compaction pending) |
 
 ## Plan (design notes for later)
 
@@ -79,3 +79,5 @@ Status: IMPLEMENTING on branch feat/compactor (L11 "go go go").
 
 - Layout: `src/config.ts` (schema FIELDS/DEFAULTS, resolveConfig, setPath/parseValue), `src/store.ts` (files), `src/controller.ts` (pure cycle state machine), `src/protocol.ts` (pi.events + template), `src/cycle.ts` (Pi wiring of the cycle, tools `compaction_ready`/`compaction_defer`), `src/strategy.ts` (pure `buildCompaction`, pins, file lists), `src/wire.ts` (`registerCompactor` composes everything), `extensions/compactor.ts` (entry). Tests: `tests/*.test.ts` with the fake Pi in `tests/helpers.ts`; run `npm test`.
 - Pi facts: `ctx.compact()` aborts a running turn, so compaction runs only at `agent_settled`; preflight is a hidden `custom_message` boundary draft + `continue: true`; Pi caps no continue loops; Pi does not auto-continue after threshold compaction (we send `compactor-resume`); `session_before_compact` honors `cancel` for every reason; `pi.events` listeners are isolated and must act synchronously; `firstKeptEntryId: null` from the hook is retain-none (prototype/retain-none.test.ts). A boundary handler's returned `entries` REPLACE event.entries (return `[...event.entries, ...new]`); one bad draft drops the whole boundary. Pruning runs when usage crosses the soft threshold (idle/pending), before the cycle arms.
+- L12. Verification 2026-11-26: 139 tests pass; `tsc --strict` clean against Pi 1.6.1 (tsconfig `paths` to the installed package, scratch dir). Live Pi 1.6.0 (`pi --no-extensions -e extensions/compactor.ts -p`): `/compactor status` works in print mode; with softThreshold 1 + handoff-only the hidden preflight fired at settle, the agent called `compaction_ready` with a handoff, and compaction started at idle (reason manual). Pi refused it with "Nothing to compact (session too small)" (its own cut point keeps recent ~20k tokens), our failure path notified and cooled down. A live compaction that actually writes an entry is still unverified (needs a session larger than Pi's keep-recent window).
+- L13. Incident: a scratch `npm i --no-save` in a dir whose node_modules/@earendil-works was a symlink into gentle-pi's install pruned the real packages. User chose "Reinstalar con mise (forzado)"; `mise install --force npm:gentle-pi@5.0.0` restored it (now resolves Pi 1.6.1). Never symlink real installs into a dir where npm runs.
