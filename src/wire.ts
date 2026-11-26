@@ -3,6 +3,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { resolveConfig, type CompactorConfig } from "./config.ts";
 import { createStore, type Store } from "./store.ts";
+import { registerCycle, type Cycle } from "./cycle.ts";
 
 export interface WireOptions {
 	agentDir: string;
@@ -21,7 +22,12 @@ type Ctx = Pick<ExtensionContext, "cwd" | "hasUI" | "ui" | "model">;
 
 export const modelKey = (model: { provider: string; id: string } | undefined) => (model ? `${model.provider}/${model.id}` : undefined);
 
-export function registerCompactor(pi: ExtensionAPI, options: WireOptions): Settings {
+export interface Compactor extends Settings {
+	settings: Settings;
+	cycle: Cycle;
+}
+
+export function registerCompactor(pi: ExtensionAPI, options: WireOptions): Compactor {
 	const stderr = options.stderr ?? ((text: string) => void process.stderr.write(text));
 	let ctx: Ctx | undefined;
 	let model: string | undefined;
@@ -56,5 +62,7 @@ export function registerCompactor(pi: ExtensionAPI, options: WireOptions): Setti
 		current();
 	});
 
-	return { current, store, warnings: () => warnings };
+	const settings: Settings = { current, store, warnings: () => warnings };
+	const cycle = registerCycle(pi, { config: current, notify });
+	return { ...settings, settings, cycle };
 }
