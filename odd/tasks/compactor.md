@@ -3,7 +3,7 @@
 Pi extension package that compacts context in phases: a configurable soft threshold triggers a preflight
 in which the agent receives instructions and hands off state, then compaction runs and the agent resumes.
 Agnostic extension protocol; no direct adaptations to other extensions.
-Status: IMPLEMENTING on branch feat/compactor (L11 "go go go").
+Status: RELEASED 0.1.5 on npm (provenance) and GitHub; main = feat/compactor.
 
 ## Specs
 
@@ -113,3 +113,4 @@ Status: IMPLEMENTING on branch feat/compactor (L11 "go go go").
 - L34. Second live TUI compaction in mirao (same session, v0.1.0): 200k at 23:58:09, preflight 23:58:31, handoff 23:58:44, Pi-route compaction 23:59:18 (hybrid, tokensBefore 205665, 12166-char summary carrying the first one's work, 1 pin, no fallback). Cumulative file lists kept across compactions (read 2, modified 4 -> 7, first lists contained in the second). Engram updated "Compaction recovery summary" #6274 with the new handoff. User: "si todo bien con mirao entonces esto funciona y hacemos release" -> release v0.1.4.
 - L35. GitHub release v0.1.4 created by hand (https://github.com/jals1212/pi-compactor/releases/tag/v0.1.4). User chose "Release workflow like pi-mox": `.github/workflows/release.yml` copied from pi-mox (trusted publishing, `npm stage publish --provenance`, GitHub release from CHANGELOG), `CHANGELOG.md` added, version 0.1.5. Tag v0.1.5 is pushed only after the user names the trusted publisher on npmjs.com (the 0.0.0 reservation already exists, so no manual first publish).
 - L36. User: "ya lo hice" (trusted publisher named on npmjs.com). Tag v0.1.5 pushed; Release workflow run 45914767796 passed: tests, staged on npm with provenance, GitHub release from CHANGELOG. Pending: the user approves the staged version with 2FA.
+- L37. User approved the staged release ("lsito"): npm `pi-compactor@0.1.5` is latest, with SLSA provenance. gentle-shell switched from `git:...@v0.1.4` to `npm:pi-compactor` (installed 0.1.5).
